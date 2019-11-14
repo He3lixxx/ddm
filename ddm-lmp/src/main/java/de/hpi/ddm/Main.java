@@ -10,7 +10,6 @@ import de.hpi.ddm.configuration.ConfigurationSingleton;
 public class Main {
 
 	public static void main(String[] args) throws Exception {
-		
 		CommandMaster commandMaster = new CommandMaster();
         CommandSlave commandSlave = new CommandSlave();
         JCommander jCommander = JCommander.newBuilder()

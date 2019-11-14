@@ -7,7 +7,7 @@ import de.hpi.ddm.configuration.ConfigurationSingleton;
 
 // TODO: Is "implements Serializable" here okay?
 public class BloomFilter implements Serializable {
-
+	private static final long serialVersionUID = 6297203026107999161L;
 	public static int DEFAULT_SIZE = 8 * 1024 * 1024 * ConfigurationSingleton.get().getDataSize();
 	
 	private final BitSet bits;
