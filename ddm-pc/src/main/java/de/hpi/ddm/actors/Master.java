@@ -22,9 +22,6 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
-	// Props is a configuration class to specify options for the creation of actors, think
-	// of it as an immutable and thus freely shareable recipe for creating an actor
-	// including associated deployment information
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
 	}
