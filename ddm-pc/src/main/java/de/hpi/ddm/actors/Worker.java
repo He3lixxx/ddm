@@ -1,10 +1,8 @@
 package de.hpi.ddm.actors;
 
-import java.io.Serializable;
-import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -19,9 +17,6 @@ import akka.cluster.ClusterEvent.MemberUp;
 import akka.cluster.Member;
 import akka.cluster.MemberStatus;
 import de.hpi.ddm.MasterSystem;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 
 public class Worker extends AbstractLoggingActor {
 
@@ -35,60 +30,13 @@ public class Worker extends AbstractLoggingActor {
 		return Props.create(Worker.class);
 	}
 
-	public Worker() {
+	public Worker() throws NoSuchAlgorithmException {
 		this.cluster = Cluster.get(this.context().system());
 	}
 
 	////////////////////
 	// Actor Messages //
 	////////////////////
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class PasswordWorkPacketMessage implements Serializable {
-		private static final long serialVersionUID = 4661499214826867244L;
-		private Set<Character> reducedAlphabet;
-		private int length;
-		// TODO später: char startChar;
-	}
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class PasswordSolvedMessage implements Serializable {
-		private static final long serialVersionUID = 5219945881030570315L;
-		private byte[] hash;
-		private String password;
-	}
-
-	@Data
-	private static class DoneMessage implements Serializable {
-		private static final long serialVersionUID = 2476247634500726940L;
-	}
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class HintWorkPacketMessage implements Serializable {
-		private static final long serialVersionUID = 1147004165303224462L;
-		private Set<Character> alphabet;
-		private char missingChar;
-		// TODO Später: char startChar; // für die Permutation
-	}
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class UnsolvedHashesMessage implements Serializable {
-		private static final long serialVersionUID = 8266910043406252422L;
-		private Set<byte[]> hintHashes;
-		private Set<byte[]> passwordHashes;
-	}
-
-	@Data
-	public static class UnsolvedHashesReceivedMessage implements Serializable {
-		private static final long serialVersionUID = 8266910043406252422L;
-	}
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class HintSolvedMessage implements Serializable {
-		private static final long serialVersionUID = 3443862827428452603L;
-		private byte[] hash;
-		private String hint;
-	}
 
 	/////////////////
 	// Actor State //
@@ -102,6 +50,8 @@ public class Worker extends AbstractLoggingActor {
 
 	private char hintChar;
 	private Set<Character> alphabet;
+
+	private MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
 	/////////////////////
 	// Actor Lifecycle //
@@ -129,21 +79,21 @@ public class Worker extends AbstractLoggingActor {
 				.match(CurrentClusterState.class, this::handle)
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
-				.match(UnsolvedHashesMessage.class, this::handle)
-				.match(HintWorkPacketMessage.class, this::handle)
-				.match(PasswordWorkPacketMessage.class, this::handle)
+				.match(Master.UnsolvedHashesMessage.class, this::handle)
+				.match(Master.HintWorkPacketMessage.class, this::handle)
+				.match(Master.PasswordWorkPacketMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
 
-	private void handle(PasswordWorkPacketMessage message){
+	private void handle(Master.PasswordWorkPacketMessage message){
 		//TODO
 		//Schleife die alle Kombinationen des Grundalphabets probiert und hashed
 		//if match in this.unsolvedPasswordHashes
 		//this.sender().tell(new PasswordSolvedMessage)
 	}
 
-	private void handle(HintWorkPacketMessage message){
+	private void handle(Master.HintWorkPacketMessage message){
 		this.hintChar = message.missingChar;
 		this.alphabet = message.alphabet;
 
@@ -160,13 +110,12 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	//receive the sets of unsolved hashes and save them locally
-	//TODO: possible improvement - save them only once per node instead of once per actor
-	private void handle(UnsolvedHashesMessage message){
-		this.unsolvedHintHashes = message.hintHashes;
-		this.unsolvedPasswordHashes = message.passwordHashes;
+	//TODO: possible improvement - save them only once per node instead of once per actor -- use Akka Distributed Data
+	private void handle(Master.UnsolvedHashesMessage message){
+		this.unsolvedHintHashes = message.getHintHashes();
+		this.unsolvedPasswordHashes = message.getPasswordHashes();
 
-		//let the master know that you got the data
-		this.sender().tell(new UnsolvedHashesReceivedMessage(), this.self());
+		this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
 	}
 
 	private void handle(CurrentClusterState message) {
@@ -195,20 +144,18 @@ public class Worker extends AbstractLoggingActor {
 			this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
 	}
 
-	private String hash(String line) {
-		try {
-			MessageDigest digest = MessageDigest.getInstance("SHA-256");
-			byte[] hashedBytes = digest.digest(String.valueOf(line).getBytes("UTF-8"));
+	private byte[] hash(String line) {
+		return this.digest.digest(String.valueOf(line).getBytes(StandardCharsets.UTF_8));
+	}
 
-			StringBuffer stringBuffer = new StringBuffer();
-			for (int i = 0; i < hashedBytes.length; i++) {
-				stringBuffer.append(Integer.toString((hashedBytes[i] & 0xff) + 0x100, 16).substring(1));
-			}
-			return stringBuffer.toString();
+	private String hashToString(String line) {
+		byte[] hashedBytes = this.hash(line);
+
+		StringBuilder stringBuilder = new StringBuilder();
+		for (byte hashedByte : hashedBytes) {
+			stringBuilder.append(Integer.toString((hashedByte & 0xff) + 0x100, 16).substring(1));
 		}
-		catch (NoSuchAlgorithmException | UnsupportedEncodingException e) {
-			throw new RuntimeException(e.getMessage());
-		}
+		return stringBuilder.toString();
 	}
 
 	// Generating all permutations of an array using Heap's Algorithm

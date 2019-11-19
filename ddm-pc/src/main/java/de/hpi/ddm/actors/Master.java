@@ -82,7 +82,7 @@ public class Master extends AbstractLoggingActor {
 
 	// Structures to efficiently distribute work among workers
 	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class HintWorkPacketMessage implements Serializable {
+	public static class HintWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 1147004165303224462L;
 		private Set<Character> alphabet;
 		private char missingChar;
@@ -90,26 +90,26 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class HintSolvedMessage implements Serializable {
+	public static class HintSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 3443862827428452603L;
 		private byte[] hash;
 		private String hint;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class PasswordSolvedMessage implements Serializable {
+	public static class PasswordSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 5219945881030570315L;
 		private byte[] hash;
 		private String password;
 	}
 
 	@Data
-	private static class DoneMessage implements Serializable {
+	public static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	private static class PasswordWorkPacketMessage implements Serializable {
+	public static class PasswordWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 4661499214826867244L;
 		private Set<Character> reducedAlphabet;
 		private int length;
@@ -313,7 +313,7 @@ public class Master extends AbstractLoggingActor {
 		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(this.unsolvedHintHashes, this.unsolvedPasswordHashes);
 
 		for (ActorRef worker : this.uninitializedWorkers) {
-			// TODO: What happens if the hashes are too big for one message here?)
+			// TODO: What happens if the hashes are too big for one message here?) --> Use Akka Distributed Data
 			worker.tell(msg, this.self());
 		}
 	}
@@ -322,6 +322,8 @@ public class Master extends AbstractLoggingActor {
 		this.uninitializedWorkers.remove(this.sender());
 		this.idleWorkers.add(this.sender());
 
+		// TODO: If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
+		// for some messages (e.g. the DistributeHintWorkPacketsMessage), only one instance will be kept in the mailbox.
 		this.self().tell(new DistributeHintWorkPacketsMessage(), this.self());
 	}
 
