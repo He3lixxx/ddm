@@ -27,7 +27,7 @@ public class Master extends AbstractLoggingActor {
 		return Props.create(Master.class, () -> new Master(reader, collector));
 	}
 
-	public Master(final ActorRef reader, final ActorRef collector) {
+	private Master(final ActorRef reader, final ActorRef collector) {
 		this.reader = reader;
 		this.collector = collector;
 		this.workers = new ArrayList<>();
@@ -43,47 +43,57 @@ public class Master extends AbstractLoggingActor {
 	}
 	
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class BatchMessage implements Serializable {
+	static class BatchMessage implements Serializable {
 		private static final long serialVersionUID = 8343040942748609598L;
 		private List<String[]> lines;
 	}
 
 	@Data
-	public static class RegistrationMessage implements Serializable {
+	static class RegistrationMessage implements Serializable {
 		private static final long serialVersionUID = 3303081601659723997L;
 	}
 
 	@Data
-	public static class CreateHintWorkPacketsMessage implements Serializable {
+	private static class CreateHintWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 4016375330343989553L;
 	}
 
 	@Data
-	public static class InitializeWorkersMessage implements Serializable {
+	private static class CreatePasswordWorkPackets implements Serializable {
+		private static final long serialVersionUID = 5729686774061377664L;
+	}
+
+	@Data
+	private static class InitializeWorkersMessage implements Serializable {
 		private static final long serialVersionUID = 5705955020161158225L;
 	}
 
 	// TODO (later): Don't sent both at the same time - we only need the hint hashes in the first phase
-	// and the password hashes in the second phase
+	//  and the password hashes in the second phase -- this goes along with using Akka Distributed Data for the syncing.
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class UnsolvedHashesMessage implements Serializable {
+	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
 		private Set<ByteBuffer> hintHashes;
 		private Set<ByteBuffer> passwordHashes;
 	}
 
 	@Data
-	public static class UnsolvedHashesReceivedMessage implements Serializable {
+	static class UnsolvedHashesReceivedMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
 	}
 
 	@Data
-	public static class DistributeHintWorkPacketsMessage implements Serializable {
+	private static class DistributeHintWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 3327522514637238884L;
 	}
 
+	@Data
+	private static class DistributePasswordWorkPacketsMessage implements Serializable {
+		private static final long serialVersionUID = 5583612511182731373L;
+	}
+
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class HintWorkPacketMessage implements Serializable {
+	static class HintWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 1147004165303224462L;
 		private Set<Character> alphabet;
 		private char missingChar;
@@ -91,7 +101,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class HintSolvedMessage implements Serializable {
+	static class HintSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 3443862827428452603L;
 		private ByteBuffer hash;
 		private String hint;
@@ -105,12 +115,12 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data
-	public static class DoneMessage implements Serializable {
+	static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class PasswordWorkPacketMessage implements Serializable {
+	static class PasswordWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 4661499214826867244L;
 		private Set<Character> reducedAlphabet;
 		private int length;
@@ -132,51 +142,55 @@ public class Master extends AbstractLoggingActor {
 		private ByteBuffer passwordHash;  // TODO: Brauchen wir diese hashes?
 		private ByteBuffer[] hintHashes;
 
-		// TODO Später: Eventuell weniger Speicher nutzen - solvedHints sollte nur zum Debuggen nötig sein.
-		private String[] solvedHints;
+		// private String[] solvedHints;
 		private Set<Character> reducedPasswordAlphabet;
 
 		public void storeHintSolution(ByteBuffer hintHash, String hint) {
 			boolean found = false;
+
+			// TODO: Remove this.
+			/*
 			for (int i = 0; i < hintHashes.length; ++i) {
 				if (hintHashes[i].equals(hintHash)) {
 					solvedHints[i] = hint;
-
-					Set<Character> hintSet = hint.chars().mapToObj(e->(char)e).collect(Collectors.toSet());
-					reducedPasswordAlphabet.retainAll(hintSet);
-
 					found = true;
 				}
 			}
-
 			assert(found);
+			 */
+
+			Set<Character> hintSet = hint.chars().mapToObj(e->(char)e).collect(Collectors.toSet());
+			reducedPasswordAlphabet.retainAll(hintSet);
 		}
 	}
-
-	// TODO Später: We need to know whether we still have unsolved hint hashes
-
 	// Will be filled when all csv lines have been received.
-	private List<HintWorkPacketMessage> hintWorkPackets = new LinkedList<HintWorkPacketMessage>();
+	private List<HintWorkPacketMessage> hintWorkPackets = new LinkedList<>();
+
+	// Will be filled when all hints have been solved
+	private List<PasswordWorkPacketMessage> passwordWorkPackets = new LinkedList<>();
 
 	// When a node goes down, we need to redistribute the work of the actors on this node
-	private Map<ActorRef, HintWorkPacketMessage> currentlyWorkingOnHints = new HashMap<ActorRef, HintWorkPacketMessage>();
+	private Map<ActorRef, HintWorkPacketMessage> currentlyWorkingOnHints = new HashMap<>();
+
+	private Map<ActorRef, PasswordWorkPacketMessage> currentlyWorkingOnPasswords = new HashMap<>();
 
 	// uninitialized means has not got information about the hashes we are searching yet
-	private List<ActorRef> uninitializedWorkers = new LinkedList<ActorRef>();
+	private List<ActorRef> uninitializedWorkers = new LinkedList<>();
 	// idle means that currently, no work packet is assigned to this worker
-	private List<ActorRef> idleWorkers = new LinkedList<ActorRef>();
+	private List<ActorRef> idleWorkers = new LinkedList<>();
 
 	// To be distributed to new actors before they can start working
-	// TODO Später: Eventuell kann dieses Set nicht in einer Nachricht geschickt werden -> LMP oder so?
-	private Set<ByteBuffer> unsolvedHintHashes = new HashSet<ByteBuffer>();  // Needed only in the first phase
-	private Set<ByteBuffer> unsolvedPasswordHashes = new HashSet<ByteBuffer>();  // Needed only in the second phase
+	// TODO Später: Eventuell kann dieses Set nicht in einer Nachricht geschickt werden -> Akka Distributed Data
+	private Set<ByteBuffer> unsolvedHintHashes = new HashSet<>();  // Needed only in the first phase
+	private Set<ByteBuffer> unsolvedPasswordHashes = new HashSet<>();  // Needed only in the second phase
 
 	// TODO Später: Dynamische Verteilung bei gelösten hashes, damit alle anderen Knoten diesen hash nicht mehr prüfen
+	//   --> Distributed Data
 
-	private ArrayList<CsvEntry> csvEntries = new ArrayList<CsvEntry>();
+	private ArrayList<CsvEntry> csvEntries = new ArrayList<>();
 
 	// For fast lookup when a worker has found the raw string for a hash, we keep this lookup table
-	private Map<ByteBuffer, List<CsvEntry> > hashToEntry = new HashMap<ByteBuffer, List<CsvEntry>>();
+	private Map<ByteBuffer, List<CsvEntry> > hashToEntry = new HashMap<>();
 
 	private Set<Character> passwordChars = null;
 	private int passwordLength = -1;
@@ -196,7 +210,7 @@ public class Master extends AbstractLoggingActor {
 	/////////////////////
 
 	protected void addHashEntryPairToEntryLookupMap(ByteBuffer hash, CsvEntry entry) {
-		List<CsvEntry> hashToEntryMapEntry = this.hashToEntry.computeIfAbsent(entry.passwordHash, k -> new ArrayList<CsvEntry>());
+		List<CsvEntry> hashToEntryMapEntry = this.hashToEntry.computeIfAbsent(hash, k -> new ArrayList<>());
 		hashToEntryMapEntry.add(entry);
 	}
 
@@ -218,13 +232,17 @@ public class Master extends AbstractLoggingActor {
 		return receiveBuilder()
 				.match(StartMessage.class, this::handle)
 				.match(BatchMessage.class, this::handle)
-				.match(Terminated.class, this::handle)
 				.match(RegistrationMessage.class, this::handle)
 				.match(CreateHintWorkPacketsMessage.class, this::handle)
 				.match(InitializeWorkersMessage.class, this::handle)
 				.match(DoneMessage.class, this::handle)
 				.match(DistributeHintWorkPacketsMessage.class, this::handle)
 				.match(UnsolvedHashesReceivedMessage.class, this::handle)
+				.match(HintSolvedMessage.class, this::handle)
+				.match(CreatePasswordWorkPackets.class, this::handle)
+				.match(DistributePasswordWorkPacketsMessage.class, this::handle)
+				.match(PasswordSolvedMessage.class, this::handle)
+				.match(Terminated.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -241,8 +259,6 @@ public class Master extends AbstractLoggingActor {
 			this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
 
 			this.readingDone = true;
-			/* this.collector.tell(new Collector.PrintMessage(), this.self());
-			this.terminate(); */
 			return;
 		}
 
@@ -322,29 +338,85 @@ public class Master extends AbstractLoggingActor {
 		this.idleWorkers.add(this.sender());
 
 		// TODO: If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
-		// for some messages (e.g. the DistributeHintWorkPacketsMessage), only one instance will be kept in the mailbox.
+		//  for some messages (e.g. the DistributeHintWorkPacketsMessage), only one instance will be kept in the mailbox.
 		this.self().tell(new DistributeHintWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(DoneMessage message) {
+		// TODO: Remove also from currentlyWorkingOnPasswords -- probably way easier to just merge them
 		this.currentlyWorkingOnHints.remove(this.sender());
 		this.idleWorkers.add(this.sender());
 		this.self().tell(new DistributeHintWorkPacketsMessage(), this.self());
+		this.self().tell(new DistributePasswordWorkPacketsMessage(), this.self());
 	}
 
-	protected void terminate() {
-		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
-		this.collector.tell(PoisonPill.getInstance(), ActorRef.noSender());
-		
-		for (ActorRef worker : this.workers) {
-			this.context().unwatch(worker);
-			worker.tell(PoisonPill.getInstance(), ActorRef.noSender());
+	protected void handle(HintSolvedMessage message) {
+		// TODO: Propagate to all workers that this hint hash is solved
+		this.unsolvedHintHashes.remove(message.getHash());
+
+		List<CsvEntry> entryList = this.hashToEntry.get(message.getHash());
+		assert(entryList != null);
+		assert(entryList.size() > 0);
+
+		for (CsvEntry entry : entryList) {
+			entry.storeHintSolution(message.getHash(), message.getHint());
 		}
-		
-		this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
-		
-		long executionTime = System.currentTimeMillis() - this.startTime;
-		this.log().info("Algorithm finished in {} ms", executionTime);
+
+		// TODO: If all enough hashes are solved, start giving out password tasks
+		//  This is the case for all lines where we have solved all hints and where we are sure that for all lines where
+		//  unsolved hints are left, we have at least one char that is not contained in the reduced alphabet of this line
+		//  anymore.
+		if (this.unsolvedHintHashes.isEmpty()) {
+			this.self().tell(new CreatePasswordWorkPackets(), this.self());
+		}
+	}
+
+	protected void handle(CreatePasswordWorkPackets message) {
+		Set<Set<Character>> uniqueAlphabets = new HashSet<>();
+		for (CsvEntry entry : this.csvEntries) {
+			uniqueAlphabets.add(entry.reducedPasswordAlphabet);
+		}
+
+		// TODO: Improve: Distribute using a fixed first character for each packet.
+		for (Set<Character> uniqueAlphabet : uniqueAlphabets) {
+			this.passwordWorkPackets.add(new PasswordWorkPacketMessage(uniqueAlphabet, this.passwordLength));
+		}
+
+		this.self().tell(new DistributePasswordWorkPacketsMessage(), this.self());
+	}
+
+	// TODO: At all places, where we decide to send a CreateHintWorkPackets or a DistributeHintWorkPackets message, it
+	//  might be necessary to send the password equivalent instead.
+	// TODO: This message may be easily unified? Either a work packet is ready, or it is not, in both cases it can be
+	//  distributed --> I think we can unify our data structures
+	protected void handle(DistributePasswordWorkPacketsMessage message) {
+		Iterator<PasswordWorkPacketMessage> passwordWorkPacketIterator = this.passwordWorkPackets.iterator();
+		Iterator<ActorRef> actorIterator = this.idleWorkers.iterator();
+
+		while (passwordWorkPacketIterator.hasNext() && actorIterator.hasNext()) {
+			PasswordWorkPacketMessage workPacket = passwordWorkPacketIterator.next();
+			passwordWorkPacketIterator.remove();
+
+			ActorRef actor = actorIterator.next();
+			actorIterator.remove();
+
+			actor.tell(workPacket, this.self());
+			this.currentlyWorkingOnPasswords.put(actor, workPacket);
+		}
+	}
+
+	protected void handle(PasswordSolvedMessage message) {
+		// TODO: Propagate to all workers that this hint hash is solved
+		this.unsolvedPasswordHashes.remove(message.getHash());
+
+		for (CsvEntry entry : this.hashToEntry.get(message.getHash())) {
+			this.collector.tell(new Collector.CollectMessage(entry.id + ": " + message.getPassword()), this.self());
+		}
+
+		if (this.unsolvedPasswordHashes.isEmpty()) {
+			this.collector.tell(new Collector.PrintMessage(), this.self());
+			this.terminate();
+		}
 	}
 
 	protected void handle(RegistrationMessage message) {
@@ -360,6 +432,7 @@ public class Master extends AbstractLoggingActor {
 	
 	protected void handle(Terminated message) {
 		//TODO: wahrscheinlich viel code duplication durch handling von hints and passwords separat
+		// TODO: Handle: actor might have been working on password (stored in this.currentlyWorkingOnPasswords)
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
 		this.uninitializedWorkers.remove(message.getActor());
@@ -374,4 +447,20 @@ public class Master extends AbstractLoggingActor {
 
 		this.log().info("Unregistered {}", message.getActor());
 	}
+
+	protected void terminate() {
+		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
+		this.collector.tell(PoisonPill.getInstance(), ActorRef.noSender());
+
+		for (ActorRef worker : this.workers) {
+			this.context().unwatch(worker);
+			worker.tell(PoisonPill.getInstance(), ActorRef.noSender());
+		}
+
+		this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
+
+		long executionTime = System.currentTimeMillis() - this.startTime;
+		this.log().info("Algorithm finished in {} ms", executionTime);
+	}
+
 }

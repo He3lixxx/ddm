@@ -87,10 +87,13 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.PasswordWorkPacketMessage message){
-		//TODO
-		//Schleife die alle Kombinationen des Grundalphabets probiert und hashed
-		//if match in this.unsolvedPasswordHashes
-		//this.sender().tell(new PasswordSolvedMessage)
+		Set<Character> reducedAlphabet = message.getReducedAlphabet();
+		Character[] characterList = new Character[reducedAlphabet.size()];
+		reducedAlphabet.toArray(characterList);
+
+		this.recursivelyCheckCombinationsForSolutions(characterList, "", message.getLength());
+
+		this.sender().tell(new Master.DoneMessage(), this.self());
 	}
 
 	private void handle(Master.HintWorkPacketMessage message){
@@ -158,12 +161,20 @@ public class Worker extends AbstractLoggingActor {
 		return stringBuilder.toString();
 	}
 
-	// Generating all permutations of an array using Heap's Algorithm
+	// Check all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
 	private void recursivelyCheckPermutationsForSolutions(Character[] chars, int charsSize, int permutationSize) {
-		if (charsSize == 1)
-			this.checkPermutationForSolution(chars, this.unsolvedHintHashes);
+		if (charsSize == 1) {
+			StringBuilder sb = new StringBuilder(chars.length);
+			for (Character c : chars)
+				sb.append(c.charValue());
+
+			String raw_hint = sb.toString();
+			ByteBuffer hash = wrap(hash(raw_hint));
+			if (this.unsolvedHintHashes.contains(hash))
+				this.sender().tell(new Master.HintSolvedMessage(hash, raw_hint), this.self());
+		}
 
 		for (int i = 0; i < charsSize; i++) {
 			this.recursivelyCheckPermutationsForSolutions(chars, charsSize - 1, permutationSize);
@@ -182,16 +193,22 @@ public class Worker extends AbstractLoggingActor {
 		}
 	}
 
-	private void checkPermutationForSolution(Character[] chars, Set<ByteBuffer> searchedHashes) {
-		StringBuilder sb = new StringBuilder(chars.length);
-		for (Character c : chars)
-			sb.append(c.charValue());
+	// Check all combinations of length chars_left_to_add of a character set.
+	// https://www.geeksforgeeks.org/print-all-combinations-of-given-length/
+	private void recursivelyCheckCombinationsForSolutions(Character[] base_chars, String prefix, int chars_left_to_add) {
+		if (chars_left_to_add == 0)
+		{
+			ByteBuffer hash = wrap(hash(prefix));
+			if (this.unsolvedPasswordHashes.contains(hash))
+				this.sender().tell(new Master.PasswordSolvedMessage(hash, prefix), this.self());
 
-		String raw = sb.toString();
+			return;
+		}
 
-		ByteBuffer hash = wrap(hash(raw));
-		if (searchedHashes.contains(hash)) {
-			this.sender().tell(new Master.HintSolvedMessage(hash, raw), this.self());
+		for (Character base_char : base_chars)
+		{
+			String recursionPrefix = prefix + base_char;
+			recursivelyCheckCombinationsForSolutions(base_chars, recursionPrefix, chars_left_to_add - 1);
 		}
 	}
 }
