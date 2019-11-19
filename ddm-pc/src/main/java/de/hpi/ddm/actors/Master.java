@@ -1,6 +1,7 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -62,11 +63,13 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 5705955020161158225L;
 	}
 
+	// TODO (later): Don't sent both at the same time - we only need the hint hashes in the first phase
+	// and the password hashes in the second phase
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
-		private Set<byte[]> hintHashes;
-		private Set<byte[]> passwordHashes;
+		private Set<ByteBuffer> hintHashes;
+		private Set<ByteBuffer> passwordHashes;
 	}
 
 	@Data
@@ -74,13 +77,11 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 8266910043406252422L;
 	}
 
-
 	@Data
 	public static class DistributeHintWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 3327522514637238884L;
 	}
 
-	// Structures to efficiently distribute work among workers
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class HintWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 1147004165303224462L;
@@ -92,14 +93,14 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class HintSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 3443862827428452603L;
-		private byte[] hash;
+		private ByteBuffer hash;
 		private String hint;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class PasswordSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 5219945881030570315L;
-		private byte[] hash;
+		private ByteBuffer hash;
 		private String password;
 	}
 
@@ -128,17 +129,17 @@ public class Master extends AbstractLoggingActor {
 	private static class CsvEntry {
 		private int id;
 		private String name;
-		private byte[] passwordHash;  // TODO: Brauchen wir diese hashes?
-		private byte[][] hintHashes;
+		private ByteBuffer passwordHash;  // TODO: Brauchen wir diese hashes?
+		private ByteBuffer[] hintHashes;
 
 		// TODO Später: Eventuell weniger Speicher nutzen - solvedHints sollte nur zum Debuggen nötig sein.
 		private String[] solvedHints;
 		private Set<Character> reducedPasswordAlphabet;
 
-		public void storeHintSolution(byte[] hintHash, String hint) {
+		public void storeHintSolution(ByteBuffer hintHash, String hint) {
 			boolean found = false;
 			for (int i = 0; i < hintHashes.length; ++i) {
-				if (Arrays.equals(hintHashes[i], hintHash)) {
+				if (hintHashes[i].equals(hintHash)) {
 					solvedHints[i] = hint;
 
 					Set<Character> hintSet = hint.chars().mapToObj(e->(char)e).collect(Collectors.toSet());
@@ -152,7 +153,6 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	// TODO Später: Eventuell byte[] für die Hashes durch BigInt ersetzen (Performance?)
 	// TODO Später: We need to know whether we still have unsolved hint hashes
 
 	// Will be filled when all csv lines have been received.
@@ -168,15 +168,15 @@ public class Master extends AbstractLoggingActor {
 
 	// To be distributed to new actors before they can start working
 	// TODO Später: Eventuell kann dieses Set nicht in einer Nachricht geschickt werden -> LMP oder so?
-	private Set<byte[]> unsolvedHintHashes = new HashSet<byte[]>();  // Needed only in the first phase
-	private Set<byte[]> unsolvedPasswordHashes = new HashSet<byte[]>();  // Needed only in the second phase
+	private Set<ByteBuffer> unsolvedHintHashes = new HashSet<ByteBuffer>();  // Needed only in the first phase
+	private Set<ByteBuffer> unsolvedPasswordHashes = new HashSet<ByteBuffer>();  // Needed only in the second phase
 
 	// TODO Später: Dynamische Verteilung bei gelösten hashes, damit alle anderen Knoten diesen hash nicht mehr prüfen
 
 	private ArrayList<CsvEntry> csvEntries = new ArrayList<CsvEntry>();
 
 	// For fast lookup when a worker has found the raw string for a hash, we keep this lookup table
-	private Map<byte[], List<CsvEntry> > hashToEntry = new HashMap<byte[], List<CsvEntry>>();
+	private Map<ByteBuffer, List<CsvEntry> > hashToEntry = new HashMap<ByteBuffer, List<CsvEntry>>();
 
 	private Set<Character> passwordChars = null;
 	private int passwordLength = -1;
@@ -195,7 +195,7 @@ public class Master extends AbstractLoggingActor {
 	// Private Methods //
 	/////////////////////
 
-	protected void addHashEntryPairToEntryLookupMap(byte[] hash, CsvEntry entry) {
+	protected void addHashEntryPairToEntryLookupMap(ByteBuffer hash, CsvEntry entry) {
 		List<CsvEntry> hashToEntryMapEntry = this.hashToEntry.computeIfAbsent(entry.passwordHash, k -> new ArrayList<CsvEntry>());
 		hashToEntryMapEntry.add(entry);
 	}
@@ -250,17 +250,6 @@ public class Master extends AbstractLoggingActor {
 		this.reader.tell(new Reader.ReadMessage(), this.self());
 
 		for (String[] line : message.getLines()) {
-			CsvEntry entry = new CsvEntry();
-
-			entry.id = Integer.parseInt(line[0]);
-			entry.name = line[1];
-			entry.passwordHash = HexStringParser.parse(line[4]);
-			entry.hintHashes = new byte[line.length - 5][];
-			entry.reducedPasswordAlphabet = new HashSet<>(this.passwordChars);
-			for (int i = 5; i < line.length; ++i) {
-				entry.hintHashes[i - 5] = HexStringParser.parse(line[i]);
-			}
-
 			int passwordLength = Integer.parseInt(line[3]);
 			if (this.passwordLength == -1) {
 				this.passwordChars = line[2].chars().mapToObj(e->(char)e).collect(Collectors.toSet());
@@ -271,7 +260,17 @@ public class Master extends AbstractLoggingActor {
 				assert(line[2].chars().mapToObj(e->(char)e).collect(Collectors.toSet()).equals(this.passwordChars));
 			}
 
+			CsvEntry entry = new CsvEntry();
 			this.csvEntries.add(entry);
+
+			entry.id = Integer.parseInt(line[0]);
+			entry.name = line[1];
+			entry.passwordHash = HexStringParser.parse(line[4]);
+			entry.hintHashes = new ByteBuffer[line.length - 5];
+			entry.reducedPasswordAlphabet = new HashSet<>(this.passwordChars);
+			for (int i = 5; i < line.length; ++i) {
+				entry.hintHashes[i - 5] = HexStringParser.parse(line[i]);
+			}
 
 			this.addHashEntryPairToEntryLookupMap(entry.passwordHash, entry);
 			this.unsolvedPasswordHashes.add(entry.passwordHash);
