@@ -104,11 +104,6 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data
-	private static class IdleMessage implements Serializable {
-		private static final long serialVersionUID = 8077168058365748370L;
-	}
-
-	@Data
 	private static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
 	}
