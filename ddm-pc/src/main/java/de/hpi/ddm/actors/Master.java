@@ -103,12 +103,12 @@ public class Master extends AbstractLoggingActor {
 		private String password;
 	}
 
-	@Data @NoArgsConstructor @AllArgsConstructor
+	@Data
 	private static class IdleMessage implements Serializable {
 		private static final long serialVersionUID = 8077168058365748370L;
 	}
 
-	@Data @NoArgsConstructor @AllArgsConstructor
+	@Data
 	private static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
 	}
@@ -227,6 +227,9 @@ public class Master extends AbstractLoggingActor {
 				.match(RegistrationMessage.class, this::handle)
 				.match(CreateHintWorkPacketsMessage.class, this::handle)
 				.match(InitializeWorkersMessage.class, this::handle)
+				.match(DoneMessage.class, this::handle)
+				.match(DistributeHintWorkPacketsMessage.class, this::handle)
+				.match(UnsolvedHashesReceivedMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -286,7 +289,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(CreateHintWorkPacketsMessage message) {
-		// TODO: Improve: Distrbute using a fixed first character for each packet.
+		// TODO: Improve: Distribute using a fixed first character for each packet.
 		for (char c : this.passwordChars) {
 			this.hintWorkPackets.add(new HintWorkPacketMessage(this.passwordChars, c));
 		}
