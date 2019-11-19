@@ -14,6 +14,8 @@ import de.hpi.ddm.actors.Master;
 import de.hpi.ddm.actors.Reader;
 import de.hpi.ddm.actors.Reaper;
 import de.hpi.ddm.actors.Worker;
+import de.hpi.ddm.actors.listeners.ClusterListener;
+import de.hpi.ddm.actors.listeners.MetricsListener;
 import de.hpi.ddm.configuration.Configuration;
 import de.hpi.ddm.configuration.ConfigurationSingleton;
 import scala.concurrent.Await;
@@ -35,8 +37,8 @@ public class MasterSystem {
 		
 		final ActorSystem system = ActorSystem.create(c.getActorSystemName(), config);
 
-	//	ActorRef clusterListener = system.actorOf(ClusterListener.props(), ClusterListener.DEFAULT_NAME);
-	//	ActorRef metricsListener = system.actorOf(MetricsListener.props(), MetricsListener.DEFAULT_NAME);
+		ActorRef clusterListener = system.actorOf(ClusterListener.props(), ClusterListener.DEFAULT_NAME);
+		ActorRef metricsListener = system.actorOf(MetricsListener.props(), MetricsListener.DEFAULT_NAME);
 		
 		ActorRef reaper = system.actorOf(Reaper.props(), Reaper.DEFAULT_NAME);
 		
