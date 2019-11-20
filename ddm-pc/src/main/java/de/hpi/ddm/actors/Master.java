@@ -184,9 +184,6 @@ public class Master extends AbstractLoggingActor {
 	private Set<ByteBuffer> unsolvedHintHashes = new HashSet<>();  // Needed only in the first phase
 	private Set<ByteBuffer> unsolvedPasswordHashes = new HashSet<>();  // Needed only in the second phase
 
-	// TODO Später: Dynamische Verteilung bei gelösten hashes, damit alle anderen Knoten diesen hash nicht mehr prüfen
-	//   --> Distributed Data
-
 	private ArrayList<CsvEntry> csvEntries = new ArrayList<>();
 
 	// For fast lookup when a worker has found the raw string for a hash, we keep this lookup table
@@ -394,7 +391,6 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(HintSolvedMessage message) {
-		// TODO: Propagate to all workers that this hint hash is solved
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
 		this.unsolvedHintHashes.remove(wrappedHash);
@@ -432,7 +428,6 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(PasswordSolvedMessage message) {
-		// TODO: Propagate to all workers that this hint hash is solved
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
 		this.unsolvedPasswordHashes.remove(wrappedHash);

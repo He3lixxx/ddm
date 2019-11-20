@@ -48,6 +48,7 @@ public class Worker extends AbstractLoggingActor {
 	private Member masterSystem;
 	private final Cluster cluster;
 
+	// TODO: If lookup is O(1) anyways, distinguishing between the two doesn't really make any sense.
 	private Set<ByteBuffer> unsolvedHintHashes;
 	private Set<ByteBuffer> unsolvedPasswordHashes;
 
@@ -107,6 +108,8 @@ public class Worker extends AbstractLoggingActor {
 
 		// We remove the char from the alphabet on the worker because we don't want to create too many sets on the master
 		boolean returnValue = reducedAlphabet.remove(message.getPrefixChar());
+
+		// TODO: Remove
 		assert(returnValue);
 
 		Character[] characterList = new Character[reducedAlphabet.size()];
@@ -124,16 +127,14 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	//receive the sets of unsolved hashes and save them locally
-	//TODO: possible improvement - save them only once per node instead of once per actor -- use Akka Distributed Data
+	//TODO: possible improvement - save them only once per node instead of once per actor
 	private void handle(Master.UnsolvedHashesMessage message){
-		// TODO: Reserve space beforehand?
-		this.unsolvedHintHashes = new HashSet<>();
+		this.unsolvedHintHashes = new HashSet<>(message.getHintHashes().length);
 		for (byte[] hintHash : message.getHintHashes()) {
 			this.unsolvedHintHashes.add(wrap(hintHash));
 		}
 
-		// TODO: Reserve space beforehand?
-		this.unsolvedPasswordHashes = new HashSet<>();
+		this.unsolvedPasswordHashes = new HashSet<>(message.getPasswordHashes().length);
 		for (byte[] hintHash : message.getPasswordHashes()) {
 			this.unsolvedPasswordHashes.add(wrap(hintHash));
 		}
@@ -168,9 +169,11 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private byte[] hash(String line) {
+		// TODO: What does String.valueOf(line) do here? Can we remove it?
 		return this.digest.digest(String.valueOf(line).getBytes(StandardCharsets.UTF_8));
 	}
 
+	// TODO: Remove - is slow anyway
 	public static String hashToString(ByteBuffer hash) {
 		StringBuilder stringBuilder = new StringBuilder();
 
