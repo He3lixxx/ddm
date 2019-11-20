@@ -11,8 +11,8 @@ import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.Terminated;
 import de.hpi.ddm.structures.HexStringParser;
-import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 
 public class Master extends AbstractLoggingActor {
@@ -83,21 +83,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data
-	private static class DistributeHintWorkPacketsMessage implements Serializable {
+	private static class DistributeWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 3327522514637238884L;
-	}
-
-	@Data
-	private static class DistributePasswordWorkPacketsMessage implements Serializable {
-		private static final long serialVersionUID = 5583612511182731373L;
-	}
-
-	@Data @NoArgsConstructor @AllArgsConstructor
-	static class HintWorkPacketMessage implements Serializable {
-		private static final long serialVersionUID = 1147004165303224462L;
-		private Set<Character> alphabet;
-		private char missingChar;
-		// TODO Später: char startChar; // für die Permutation
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
@@ -122,10 +109,18 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class PasswordWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 4661499214826867244L;
-		private Set<Character> reducedAlphabet;
+		private Set<Character> alphabet;
 		private int length;
 		// TODO später: char startChar;
 	}
+
+    @Data @NoArgsConstructor @AllArgsConstructor
+    static class HintWorkPacketMessage implements Serializable {
+        private static final long serialVersionUID = 1147004165303224462L;
+        private Set<Character> alphabet;
+        private char missingChar;
+        // TODO Später: char startChar; // für die Permutation
+    }
 
 	
 	/////////////////
@@ -139,40 +134,20 @@ public class Master extends AbstractLoggingActor {
 	private static class CsvEntry {
 		private int id;
 		private String name;
-		private ByteBuffer passwordHash;  // TODO: Brauchen wir diese hashes?
-		private ByteBuffer[] hintHashes;
-
-		// private String[] solvedHints;
 		private Set<Character> reducedPasswordAlphabet;
 
 		public void storeHintSolution(ByteBuffer hintHash, String hint) {
-			boolean found = false;
-
-			// TODO: Remove this.
-			/*
-			for (int i = 0; i < hintHashes.length; ++i) {
-				if (hintHashes[i].equals(hintHash)) {
-					solvedHints[i] = hint;
-					found = true;
-				}
-			}
-			assert(found);
-			 */
-
 			Set<Character> hintSet = hint.chars().mapToObj(e->(char)e).collect(Collectors.toSet());
 			reducedPasswordAlphabet.retainAll(hintSet);
 		}
 	}
-	// Will be filled when all csv lines have been received.
-	private List<HintWorkPacketMessage> hintWorkPackets = new LinkedList<>();
-
-	// Will be filled when all hints have been solved
-	private List<PasswordWorkPacketMessage> passwordWorkPackets = new LinkedList<>();
+    // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
+    // Will be filled when all csv lines have been read and when all hints have been solved
+    private List<Object> openWorkPackets = new LinkedList<>();
 
 	// When a node goes down, we need to redistribute the work of the actors on this node
-	private Map<ActorRef, HintWorkPacketMessage> currentlyWorkingOnHints = new HashMap<>();
-
-	private Map<ActorRef, PasswordWorkPacketMessage> currentlyWorkingOnPasswords = new HashMap<>();
+    // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
+    private Map<ActorRef, Object> currentlyWorkingOn = new HashMap<>();
 
 	// uninitialized means has not got information about the hashes we are searching yet
 	private List<ActorRef> uninitializedWorkers = new LinkedList<>();
@@ -236,11 +211,10 @@ public class Master extends AbstractLoggingActor {
 				.match(CreateHintWorkPacketsMessage.class, this::handle)
 				.match(InitializeWorkersMessage.class, this::handle)
 				.match(DoneMessage.class, this::handle)
-				.match(DistributeHintWorkPacketsMessage.class, this::handle)
+				.match(DistributeWorkPacketsMessage.class, this::handle)
 				.match(UnsolvedHashesReceivedMessage.class, this::handle)
 				.match(HintSolvedMessage.class, this::handle)
 				.match(CreatePasswordWorkPackets.class, this::handle)
-				.match(DistributePasswordWorkPacketsMessage.class, this::handle)
 				.match(PasswordSolvedMessage.class, this::handle)
 				.match(Terminated.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
@@ -272,7 +246,6 @@ public class Master extends AbstractLoggingActor {
 				this.passwordLength = passwordLength;
 			} else {
 				assert(passwordLength == this.passwordLength);
-				// TODO: This is duplicated across the code. Refactor.
 				assert(line[2].chars().mapToObj(e->(char)e).collect(Collectors.toSet()).equals(this.passwordChars));
 			}
 
@@ -281,19 +254,20 @@ public class Master extends AbstractLoggingActor {
 
 			entry.id = Integer.parseInt(line[0]);
 			entry.name = line[1];
-			entry.passwordHash = HexStringParser.parse(line[4]);
-			entry.hintHashes = new ByteBuffer[line.length - 5];
-			entry.reducedPasswordAlphabet = new HashSet<>(this.passwordChars);
+            entry.reducedPasswordAlphabet = new HashSet<>(this.passwordChars);
+
+			ByteBuffer passwordHash = HexStringParser.parse(line[4]);
+			ByteBuffer[] hintHashes = new ByteBuffer[line.length - 5];
 			for (int i = 5; i < line.length; ++i) {
-				entry.hintHashes[i - 5] = HexStringParser.parse(line[i]);
+				hintHashes[i - 5] = HexStringParser.parse(line[i]);
 			}
 
-			this.addHashEntryPairToEntryLookupMap(entry.passwordHash, entry);
-			this.unsolvedPasswordHashes.add(entry.passwordHash);
+			this.addHashEntryPairToEntryLookupMap(passwordHash, entry);
+			this.unsolvedPasswordHashes.add(passwordHash);
 
-			for (int i = 0; i < entry.hintHashes.length; ++i) {
-				this.addHashEntryPairToEntryLookupMap(entry.hintHashes[i], entry);
-				this.unsolvedHintHashes.add(entry.hintHashes[i]);
+			for (int i = 0; i < hintHashes.length; ++i) {
+				this.addHashEntryPairToEntryLookupMap(hintHashes[i], entry);
+				this.unsolvedHintHashes.add(hintHashes[i]);
 			}
 		}
 	}
@@ -301,30 +275,31 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(CreateHintWorkPacketsMessage message) {
 		// TODO: Improve: Distribute using a fixed first character for each packet.
 		for (char c : this.passwordChars) {
-			this.hintWorkPackets.add(new HintWorkPacketMessage(this.passwordChars, c));
+			this.openWorkPackets.add(new HintWorkPacketMessage(this.passwordChars, c));
 		}
 
-		this.self().tell(new DistributeHintWorkPacketsMessage(), this.self());
+		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
-	protected void handle(DistributeHintWorkPacketsMessage message) {
-		Iterator<HintWorkPacketMessage> hintWorkPacketIterator = this.hintWorkPackets.iterator();
+	protected void handle(DistributeWorkPacketsMessage message) {
+		Iterator<Object> workPacketIterator = this.openWorkPackets.iterator();
 		Iterator<ActorRef> actorIterator = this.idleWorkers.iterator();
 
-		while (hintWorkPacketIterator.hasNext() && actorIterator.hasNext()) {
-			HintWorkPacketMessage workPacket = hintWorkPacketIterator.next();
-			hintWorkPacketIterator.remove();
+		while (workPacketIterator.hasNext() && actorIterator.hasNext()) {
+			Object workPacket = workPacketIterator.next();
+            workPacketIterator.remove();
 
 			ActorRef actor = actorIterator.next();
 			actorIterator.remove();
 
-			actor.tell(workPacket, this.self());
-			this.currentlyWorkingOnHints.put(actor, workPacket);
+			this.tellWorkPacket(actor, workPacket);
+			this.currentlyWorkingOn.put(actor, workPacket);
 		}
 	}
 
 	protected void handle(InitializeWorkersMessage message) {
 		// TODO: Böse: die Member sind nicht konstant - set differenz hier bestimmen und eine Kopie erstellen?
+        // --> Will be solved with Akka Distributed Data
 		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(this.unsolvedHintHashes, this.unsolvedPasswordHashes);
 
 		for (ActorRef worker : this.uninitializedWorkers) {
@@ -338,16 +313,14 @@ public class Master extends AbstractLoggingActor {
 		this.idleWorkers.add(this.sender());
 
 		// TODO: If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
-		//  for some messages (e.g. the DistributeHintWorkPacketsMessage), only one instance will be kept in the mailbox.
-		this.self().tell(new DistributeHintWorkPacketsMessage(), this.self());
+		//  for some messages (e.g. the DistributeWorkPacketsMessage), only one instance will be kept in the mailbox.
+		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(DoneMessage message) {
-		// TODO: Remove also from currentlyWorkingOnPasswords -- probably way easier to just merge them
-		this.currentlyWorkingOnHints.remove(this.sender());
+		this.currentlyWorkingOn.remove(this.sender());
 		this.idleWorkers.add(this.sender());
-		this.self().tell(new DistributeHintWorkPacketsMessage(), this.self());
-		this.self().tell(new DistributePasswordWorkPacketsMessage(), this.self());
+		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(HintSolvedMessage message) {
@@ -379,30 +352,10 @@ public class Master extends AbstractLoggingActor {
 
 		// TODO: Improve: Distribute using a fixed first character for each packet.
 		for (Set<Character> uniqueAlphabet : uniqueAlphabets) {
-			this.passwordWorkPackets.add(new PasswordWorkPacketMessage(uniqueAlphabet, this.passwordLength));
+			this.openWorkPackets.add(new PasswordWorkPacketMessage(uniqueAlphabet, this.passwordLength));
 		}
 
-		this.self().tell(new DistributePasswordWorkPacketsMessage(), this.self());
-	}
-
-	// TODO: At all places, where we decide to send a CreateHintWorkPackets or a DistributeHintWorkPackets message, it
-	//  might be necessary to send the password equivalent instead.
-	// TODO: This message may be easily unified? Either a work packet is ready, or it is not, in both cases it can be
-	//  distributed --> I think we can unify our data structures
-	protected void handle(DistributePasswordWorkPacketsMessage message) {
-		Iterator<PasswordWorkPacketMessage> passwordWorkPacketIterator = this.passwordWorkPackets.iterator();
-		Iterator<ActorRef> actorIterator = this.idleWorkers.iterator();
-
-		while (passwordWorkPacketIterator.hasNext() && actorIterator.hasNext()) {
-			PasswordWorkPacketMessage workPacket = passwordWorkPacketIterator.next();
-			passwordWorkPacketIterator.remove();
-
-			ActorRef actor = actorIterator.next();
-			actorIterator.remove();
-
-			actor.tell(workPacket, this.self());
-			this.currentlyWorkingOnPasswords.put(actor, workPacket);
-		}
+		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(PasswordSolvedMessage message) {
@@ -431,22 +384,27 @@ public class Master extends AbstractLoggingActor {
 	}
 	
 	protected void handle(Terminated message) {
-		//TODO: wahrscheinlich viel code duplication durch handling von hints and passwords separat
-		// TODO: Handle: actor might have been working on password (stored in this.currentlyWorkingOnPasswords)
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
 		this.uninitializedWorkers.remove(message.getActor());
 		this.idleWorkers.remove(message.getActor());
 
-		//TODO: performance besser durch iterator use
-		HintWorkPacketMessage lostWork = this.currentlyWorkingOnHints.get(message.getActor());
+		Object lostWork = this.currentlyWorkingOn.remove(message.getActor());
 		if(lostWork != null){
-			this.currentlyWorkingOnHints.remove(message.getActor());
-			this.hintWorkPackets.add(lostWork);
+			this.openWorkPackets.add(lostWork);
 		}
 
 		this.log().info("Unregistered {}", message.getActor());
 	}
+
+	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
+	    // TODO: Is this necessary?
+	    try {
+            actor.tell((HintWorkPacketMessage)workPacket, this.self());
+        } catch (ClassCastException e) {
+            actor.tell((PasswordWorkPacketMessage)workPacket, this.self());
+        }
+    }
 
 	protected void terminate() {
 		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
@@ -462,5 +420,4 @@ public class Master extends AbstractLoggingActor {
 		long executionTime = System.currentTimeMillis() - this.startTime;
 		this.log().info("Algorithm finished in {} ms", executionTime);
 	}
-
 }

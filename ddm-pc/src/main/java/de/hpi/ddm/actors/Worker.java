@@ -87,7 +87,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.PasswordWorkPacketMessage message){
-		Set<Character> reducedAlphabet = message.getReducedAlphabet();
+		Set<Character> reducedAlphabet = message.getAlphabet();
 		Character[] characterList = new Character[reducedAlphabet.size()];
 		reducedAlphabet.toArray(characterList);
 
