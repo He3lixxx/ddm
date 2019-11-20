@@ -293,7 +293,6 @@ public class Master extends AbstractLoggingActor {
 			actorIterator.remove();
 
 			this.tellWorkPacket(actor, workPacket);
-			this.currentlyWorkingOn.put(actor, workPacket);
 		}
 	}
 
@@ -398,12 +397,20 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
-	    // TODO: Is this necessary?
-	    try {
-            actor.tell((HintWorkPacketMessage)workPacket, this.self());
-        } catch (ClassCastException e) {
-            actor.tell((PasswordWorkPacketMessage)workPacket, this.self());
+	    if (workPacket instanceof HintWorkPacketMessage) {
+            if (this.unsolvedHintHashes.isEmpty()) {
+                System.out.println("Dropped Hint packet as all hints are solved");
+                return;
+            }
+        } else if (workPacket instanceof PasswordWorkPacketMessage) {
+            if (this.unsolvedPasswordHashes.isEmpty()) {
+                System.out.println("Dropped password packet as all hints are solved");
+                return;
+            }
         }
+
+	    actor.tell(workPacket, this.self());
+        this.currentlyWorkingOn.put(actor, workPacket);
     }
 
 	protected void terminate() {
