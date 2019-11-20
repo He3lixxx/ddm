@@ -15,6 +15,8 @@ import lombok.Data;
 import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 
+import static java.nio.ByteBuffer.wrap;
+
 public class Master extends AbstractLoggingActor {
 
 	////////////////////////
@@ -73,8 +75,8 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
-		private Set<ByteBuffer> hintHashes;
-		private Set<ByteBuffer> passwordHashes;
+		private byte[][] hintHashes;
+		private byte[][] passwordHashes;
 	}
 
 	@Data
@@ -90,14 +92,14 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class HintSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 3443862827428452603L;
-		private ByteBuffer hash;
+		private byte[] hash;
 		private String hint;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class PasswordSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 5219945881030570315L;
-		private ByteBuffer hash;
+		private byte[] hash;
 		private String password;
 	}
 
@@ -305,9 +307,20 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(InitializeWorkersMessage message) {
-		// TODO: Böse: die Member sind nicht konstant - set differenz hier bestimmen und eine Kopie erstellen?
-        //   --> Will be solved with Akka Distributed Data
-		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(this.unsolvedHintHashes, this.unsolvedPasswordHashes);
+		// TODO: Cache the byte representation? --> We need more complex sharing logic anyway.
+        byte[][] hintHashes = new byte[this.unsolvedHintHashes.size()][];
+        int i = 0;
+        for (ByteBuffer hintHash : this.unsolvedHintHashes) {
+            hintHashes[i++] = hintHash.array();
+        }
+
+        byte[][] passwordHashes = new byte[this.unsolvedPasswordHashes.size()][];
+        i = 0;
+        for (ByteBuffer passwordHash : this.unsolvedPasswordHashes) {
+            passwordHashes[i++] = passwordHash.array();
+        }
+
+		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(hintHashes, passwordHashes);
 
 		for (ActorRef worker : this.uninitializedWorkers) {
 			// TODO: What happens if the hashes are too big for one message here?) --> Use Akka Distributed Data
@@ -332,14 +345,16 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(HintSolvedMessage message) {
 		// TODO: Propagate to all workers that this hint hash is solved
-		this.unsolvedHintHashes.remove(message.getHash());
+		ByteBuffer wrappedHash = wrap(message.getHash());
 
-		List<CsvEntry> entryList = this.hashToEntry.get(message.getHash());
+		this.unsolvedHintHashes.remove(wrappedHash);
+
+		List<CsvEntry> entryList = this.hashToEntry.get(wrappedHash);
 		assert(entryList != null);
 		assert(entryList.size() > 0);
 
 		for (CsvEntry entry : entryList) {
-			entry.storeHintSolution(message.getHash(), message.getHint());
+			entry.storeHintSolution(wrappedHash, message.getHint());
 		}
 
 		// TODO: If all enough hashes are solved, start giving out password tasks
@@ -368,9 +383,11 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(PasswordSolvedMessage message) {
 		// TODO: Propagate to all workers that this hint hash is solved
-		this.unsolvedPasswordHashes.remove(message.getHash());
+		ByteBuffer wrappedHash = wrap(message.getHash());
 
-		for (CsvEntry entry : this.hashToEntry.get(message.getHash())) {
+		this.unsolvedPasswordHashes.remove(wrappedHash);
+
+		for (CsvEntry entry : this.hashToEntry.get(wrappedHash)) {
 			this.collector.tell(new Collector.CollectMessage(entry.id + ": " + message.getPassword()), this.self());
 		}
 

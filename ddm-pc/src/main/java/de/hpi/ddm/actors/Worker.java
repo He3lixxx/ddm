@@ -126,8 +126,17 @@ public class Worker extends AbstractLoggingActor {
 	//receive the sets of unsolved hashes and save them locally
 	//TODO: possible improvement - save them only once per node instead of once per actor -- use Akka Distributed Data
 	private void handle(Master.UnsolvedHashesMessage message){
-		this.unsolvedHintHashes = message.getHintHashes();
-		this.unsolvedPasswordHashes = message.getPasswordHashes();
+		// TODO: Reserve space beforehand?
+		this.unsolvedHintHashes = new HashSet<>();
+		for (byte[] hintHash : message.getHintHashes()) {
+			this.unsolvedHintHashes.add(wrap(hintHash));
+		}
+
+		// TODO: Reserve space beforehand?
+		this.unsolvedPasswordHashes = new HashSet<>();
+		for (byte[] hintHash : message.getPasswordHashes()) {
+			this.unsolvedPasswordHashes.add(wrap(hintHash));
+		}
 
 		this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
 	}
@@ -183,9 +192,10 @@ public class Worker extends AbstractLoggingActor {
 				sb.append(c.charValue());
 
 			String raw_hint = sb.toString();
-			ByteBuffer hash = wrap(hash(raw_hint));
-			if (this.unsolvedHintHashes.contains(hash))
-				this.sender().tell(new Master.HintSolvedMessage(hash, raw_hint), this.self());
+			byte[] hashBytes = hash(raw_hint);
+			ByteBuffer wrappedHash = wrap(hashBytes);
+			if (this.unsolvedHintHashes.contains(wrappedHash))
+				this.sender().tell(new Master.HintSolvedMessage(hashBytes, raw_hint), this.self());
 		}
 
 		for (int i = 0; i < charsSize; i++) {
@@ -210,9 +220,10 @@ public class Worker extends AbstractLoggingActor {
 	private void recursivelyCheckCombinationsForSolutions(Character[] base_chars, String prefix, int chars_left_to_add) {
 		if (chars_left_to_add == 0)
 		{
-			ByteBuffer hash = wrap(hash(prefix));
-			if (this.unsolvedPasswordHashes.contains(hash))
-				this.sender().tell(new Master.PasswordSolvedMessage(hash, prefix), this.self());
+			byte[] hashBytes = hash(prefix);
+			ByteBuffer wrappedHash = wrap(hashBytes);
+			if (this.unsolvedPasswordHashes.contains(wrappedHash))
+				this.sender().tell(new Master.PasswordSolvedMessage(hashBytes, prefix), this.self());
 
 			return;
 		}
