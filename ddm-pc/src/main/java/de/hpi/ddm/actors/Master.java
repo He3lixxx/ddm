@@ -319,8 +319,8 @@ public class Master extends AbstractLoggingActor {
 		this.uninitializedWorkers.remove(this.sender());
 		this.idleWorkers.add(this.sender());
 
-		// TODO: If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
-		//  for some messages (e.g. the DistributeWorkPacketsMessage), only one instance will be kept in the mailbox.
+		// If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
+		// for some messages (e.g. the DistributeWorkPacketsMessage), only one instance will be kept in the mailbox.
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
