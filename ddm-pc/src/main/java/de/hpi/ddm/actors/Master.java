@@ -29,7 +29,7 @@ public class Master extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "master";
 
 	// ---- Assumptions on the limitations of large messages
-	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
+	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = true;
 
 	// If not using the large message channel, the maximum frame size should be 128kB
 	// TODO: This should probably use the large message channel, maybe even with a cranked up maximum-large-frame-size
@@ -221,6 +221,8 @@ public class Master extends AbstractLoggingActor {
 	@Override
 	public void preStart() {
 		if (VALIDATE_MEMORY_ESTIMATIONS) {
+			this.log().warning("VALIDATE_MEMORY_ESTIMATIONS is set to true. Turn off for benchmarking.");
+
 			Random r = new Random();
 			byte[][] dummy = new byte[1][];
 			byte[][] array = new byte[HASHES_PER_UNSOLVED_HASHES_MESSAGE][];
@@ -240,12 +242,12 @@ public class Master extends AbstractLoggingActor {
 			kryo.writeObject(output, message);
 			output.close();
 
-			System.out.println(HASHES_PER_UNSOLVED_HASHES_MESSAGE + " hashes would be sent in " + stream.size() / 1000 + " * 1000 B");
-			System.out.println("Maximum message size is set to " + MAXIMUM_MESSAGE_BYTES / 1000 + " * 1000B");
+			this.log().info(HASHES_PER_UNSOLVED_HASHES_MESSAGE + " hashes would be sent in " + stream.size() / 1000 + " * 1000 B");
+			this.log().info("Maximum message size is set to " + MAXIMUM_MESSAGE_BYTES / 1000 + " * 1000B");
 			if (stream.size() >= MAXIMUM_MESSAGE_BYTES) {
-				System.out.println("!!! Maximum message size validation failed !!!!");
+				this.log().error("Maximum message size validation failed.");
 			} else {
-				System.out.println("Maximum message size validation succeeded.");
+				this.log().info("Maximum message size validation succeeded.");
 			}
 		}
 
@@ -473,12 +475,12 @@ public class Master extends AbstractLoggingActor {
 	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
 	    if (workPacket instanceof HintWorkPacketMessage) {
             if (this.unsolvedHintHashes.isEmpty()) {
-                System.out.println("Dropped Hint packet as all hints are solved");
+				this.log().info("Dropped Hint packet as all hints are solved");
                 return;
             }
         } else if (workPacket instanceof PasswordWorkPacketMessage) {
             if (this.unsolvedPasswordHashes.isEmpty()) {
-                System.out.println("Dropped password packet as all hints are solved");
+				this.log().info("Dropped Password packet as all hints are solved");
                 return;
             }
         }
