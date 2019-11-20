@@ -109,17 +109,21 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class PasswordWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 4661499214826867244L;
+		// The alphabet. Each char of the PW could be one of these chars
 		private Set<Character> alphabet;
+		// The length of the password
 		private int length;
-		// TODO später: char startChar;
+		// The fixed character that should be used as prefix. Used for further distributing.
+		char prefixChar;
 	}
 
     @Data @NoArgsConstructor @AllArgsConstructor
     static class HintWorkPacketMessage implements Serializable {
         private static final long serialVersionUID = 1147004165303224462L;
-        private Set<Character> alphabet;
-        private char missingChar;
-        // TODO Später: char startChar; // für die Permutation
+        // The alphabet. We want to compute hashes of permutations of this.
+        private Set<Character> reducedAlphabet;
+        // The fixed character that should be used as prefix. Used for further distributing.
+        char prefixChar;
     }
 
 	
@@ -273,9 +277,13 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(CreateHintWorkPacketsMessage message) {
-		// TODO: Improve: Distribute using a fixed first character for each packet.
 		for (char c : this.passwordChars) {
-			this.openWorkPackets.add(new HintWorkPacketMessage(this.passwordChars, c));
+		    Set<Character> reducedAlphabet = new HashSet<>(this.passwordChars);
+            reducedAlphabet.remove(c);
+
+		    for (char fixedChar : reducedAlphabet) {
+                this.openWorkPackets.add(new HintWorkPacketMessage(reducedAlphabet, fixedChar));
+            }
 		}
 
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
@@ -298,7 +306,7 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(InitializeWorkersMessage message) {
 		// TODO: Böse: die Member sind nicht konstant - set differenz hier bestimmen und eine Kopie erstellen?
-        // --> Will be solved with Akka Distributed Data
+        //   --> Will be solved with Akka Distributed Data
 		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(this.unsolvedHintHashes, this.unsolvedPasswordHashes);
 
 		for (ActorRef worker : this.uninitializedWorkers) {
@@ -349,9 +357,10 @@ public class Master extends AbstractLoggingActor {
 			uniqueAlphabets.add(entry.reducedPasswordAlphabet);
 		}
 
-		// TODO: Improve: Distribute using a fixed first character for each packet.
 		for (Set<Character> uniqueAlphabet : uniqueAlphabets) {
-			this.openWorkPackets.add(new PasswordWorkPacketMessage(uniqueAlphabet, this.passwordLength));
+            for (char fixedChar : uniqueAlphabet) {
+                this.openWorkPackets.add(new PasswordWorkPacketMessage(uniqueAlphabet, this.passwordLength, fixedChar));
+            }
 		}
 
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());

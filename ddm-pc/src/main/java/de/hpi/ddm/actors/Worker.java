@@ -88,18 +88,25 @@ public class Worker extends AbstractLoggingActor {
 
 	private void handle(Master.PasswordWorkPacketMessage message){
 		Set<Character> reducedAlphabet = message.getAlphabet();
+
 		Character[] characterList = new Character[reducedAlphabet.size()];
 		reducedAlphabet.toArray(characterList);
 
-		this.recursivelyCheckCombinationsForSolutions(characterList, "", message.getLength());
+		this.recursivelyCheckCombinationsForSolutions(
+				characterList,
+				Character.toString(message.getPrefixChar()),
+				message.getLength() - 1
+		);
 
 		this.sender().tell(new Master.DoneMessage(), this.self());
 	}
 
 	private void handle(Master.HintWorkPacketMessage message){
 		// We do not change the message as it might just be a passed reference if we're on the Master System.
-		Set<Character> reducedAlphabet = new HashSet<Character>(message.getAlphabet());
-		boolean returnValue = reducedAlphabet.remove(message.getMissingChar());
+		Set<Character> reducedAlphabet = new HashSet<Character>(message.getReducedAlphabet());
+
+		// We remove the char from the alphabet on the worker because we don't want to create too many sets on the master
+		boolean returnValue = reducedAlphabet.remove(message.getPrefixChar());
 		assert(returnValue);
 
 		Character[] characterList = new Character[reducedAlphabet.size()];
@@ -107,7 +114,11 @@ public class Worker extends AbstractLoggingActor {
 
 		// In some really weird cases, this could lead to an inbox spam of the master inbox. I don't think we need to
 		// handle that case, though (would only happen if we accidentally find all hashes really quickly)
-		this.recursivelyCheckPermutationsForSolutions(characterList, characterList.length, characterList.length);
+		this.recursivelyCheckPermutationsForSolutions(
+				characterList,
+				characterList.length,
+				message.getPrefixChar()
+		);
 
 		this.sender().tell(new Master.DoneMessage(), this.self());
 	}
@@ -164,9 +175,10 @@ public class Worker extends AbstractLoggingActor {
 	// Check all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	private void recursivelyCheckPermutationsForSolutions(Character[] chars, int charsSize, int permutationSize) {
+	private void recursivelyCheckPermutationsForSolutions(Character[] chars, int charsSize, char prefix) {
 		if (charsSize == 1) {
-			StringBuilder sb = new StringBuilder(chars.length);
+			StringBuilder sb = new StringBuilder(chars.length + 1);
+			sb.append(prefix);
 			for (Character c : chars)
 				sb.append(c.charValue());
 
@@ -177,7 +189,7 @@ public class Worker extends AbstractLoggingActor {
 		}
 
 		for (int i = 0; i < charsSize; i++) {
-			this.recursivelyCheckPermutationsForSolutions(chars, charsSize - 1, permutationSize);
+			this.recursivelyCheckPermutationsForSolutions(chars, charsSize - 1, prefix);
 
 			if (charsSize % 2 == 1) {
 				// If size is odd, swap first and last element
