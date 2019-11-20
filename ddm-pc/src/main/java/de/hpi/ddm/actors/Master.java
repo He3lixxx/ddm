@@ -1,5 +1,6 @@
 package de.hpi.ddm.actors;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -10,6 +11,8 @@ import akka.actor.ActorRef;
 import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.Terminated;
+import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.io.Output;
 import de.hpi.ddm.structures.HexStringParser;
 import lombok.Data;
 import lombok.AllArgsConstructor;
@@ -24,6 +27,22 @@ public class Master extends AbstractLoggingActor {
 	////////////////////////
 	
 	public static final String DEFAULT_NAME = "master";
+
+	// ---- Assumptions on the limitations of large messages
+	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
+
+	// If not using the large message channel, the maximum frame size should be 128kB
+	// TODO: This should probably use the large message channel, maybe even with a cranked up maximum-large-frame-size
+	//   https://doc.akka.io/docs/akka/2.5.4/scala/general/configuration.html
+	//   4 MB should be okay then.
+	public static final int MAXIMUM_MESSAGE_BYTES = 128000;
+	// 32kB were measured on a huge message (4 * 1024 * 1024 Hashes = 136MB of serialized data).
+	// For smaller messages, it's usually less
+	public static final int UNSOLVED_HASHES_MESSAGE_OVERHEAD = 32 * 1024;
+	public static final int REQUIRED_SPACE_PER_STORED_HASH = 34; // Bytes, measured.
+	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE =
+			(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
+
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
@@ -201,6 +220,35 @@ public class Master extends AbstractLoggingActor {
 
 	@Override
 	public void preStart() {
+		if (VALIDATE_MEMORY_ESTIMATIONS) {
+			Random r = new Random();
+			byte[][] dummy = new byte[1][];
+			byte[][] array = new byte[HASHES_PER_UNSOLVED_HASHES_MESSAGE][];
+
+			for(int i = 0; i < array.length; ++i) {
+				array[i] = new byte[32];
+				r.nextBytes(array[i]);
+			}
+
+			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array, dummy);
+
+			Kryo kryo = new Kryo();
+			kryo.register(UnsolvedHashesMessage.class);
+			ByteArrayOutputStream stream = new ByteArrayOutputStream();
+
+			Output output = new Output(stream);
+			kryo.writeObject(output, message);
+			output.close();
+
+			System.out.println(HASHES_PER_UNSOLVED_HASHES_MESSAGE + " hashes would be sent in " + stream.size() / 1000 + " * 1000 B");
+			System.out.println("Maximum message size is set to " + MAXIMUM_MESSAGE_BYTES / 1000 + " * 1000B");
+			if (stream.size() >= MAXIMUM_MESSAGE_BYTES) {
+				System.out.println("!!! Maximum message size validation failed !!!!");
+			} else {
+				System.out.println("Maximum message size validation succeeded.");
+			}
+		}
+
 		Reaper.watchWithDefaultReaper(this);
 	}
 
