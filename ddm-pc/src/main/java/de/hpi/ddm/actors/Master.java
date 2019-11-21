@@ -28,6 +28,9 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
+	// Show information about how many hashes still need to be cracked.
+	public static final boolean LOG_PROGRESS = true;
+
 	// ---- Assumptions on the limitations of large messages
 	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = true;
 
@@ -168,6 +171,7 @@ public class Master extends AbstractLoggingActor {
 	}
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
     // Will be filled when all csv lines have been read and when all hints have been solved
+	// TODO: Replace this with Set for a run and check that no duplicates are in there?
     private List<Object> openWorkPackets = new LinkedList<>();
 
 	// When a node goes down, we need to redistribute the work of the actors on this node
@@ -175,9 +179,9 @@ public class Master extends AbstractLoggingActor {
     private Map<ActorRef, Object> currentlyWorkingOn = new HashMap<>();
 
 	// uninitialized means has not got information about the hashes we are searching yet
-	private List<ActorRef> uninitializedWorkers = new LinkedList<>();
+	private Set<ActorRef> uninitializedWorkers = new HashSet<>();
 	// idle means that currently, no work packet is assigned to this worker
-	private List<ActorRef> idleWorkers = new LinkedList<>();
+	private Set<ActorRef> idleWorkers = new HashSet<>();
 
 	// To be distributed to new actors before they can start working
 	// TODO Später: Eventuell kann dieses Set nicht in einer Nachricht geschickt werden -> Akka Distributed Data
@@ -373,6 +377,8 @@ public class Master extends AbstractLoggingActor {
 			// TODO: What happens if the hashes are too big for one message here?) --> Use Akka Distributed Data
 			worker.tell(msg, this.self());
 		}
+		// TODO: This is an ugly fix -- fix
+		this.uninitializedWorkers.clear();
 	}
 
 	protected void handle(UnsolvedHashesReceivedMessage message) {
@@ -410,6 +416,10 @@ public class Master extends AbstractLoggingActor {
 		if (this.unsolvedHintHashes.isEmpty()) {
 			this.self().tell(new CreatePasswordWorkPackets(), this.self());
 		}
+
+		if (LOG_PROGRESS) {
+			this.log().info("Hint solved, " + this.unsolvedHintHashes.size() + " to do.");
+		}
 	}
 
 	protected void handle(CreatePasswordWorkPackets message) {
@@ -440,6 +450,10 @@ public class Master extends AbstractLoggingActor {
 			this.collector.tell(new Collector.PrintMessage(), this.self());
 			this.terminate();
 		}
+
+		if (LOG_PROGRESS) {
+			this.log().info("Password solved, " + this.unsolvedPasswordHashes.size() + " to do.");
+		}
 	}
 
 	protected void handle(RegistrationMessage message) {
@@ -462,6 +476,7 @@ public class Master extends AbstractLoggingActor {
 		Object lostWork = this.currentlyWorkingOn.remove(message.getActor());
 		if(lostWork != null){
 			this.openWorkPackets.add(lostWork);
+			this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 		}
 
 		this.log().info("Unregistered {}", message.getActor());
@@ -481,7 +496,8 @@ public class Master extends AbstractLoggingActor {
         }
 
 	    actor.tell(workPacket, this.self());
-        this.currentlyWorkingOn.put(actor, workPacket);
+        Object previousValue = this.currentlyWorkingOn.put(actor, workPacket);
+        assert(previousValue == null);
     }
 
 	protected void terminate() {

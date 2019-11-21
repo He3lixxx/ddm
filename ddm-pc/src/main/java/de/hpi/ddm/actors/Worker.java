@@ -108,8 +108,6 @@ public class Worker extends AbstractLoggingActor {
 
 		// We remove the char from the alphabet on the worker because we don't want to create too many sets on the master
 		boolean returnValue = reducedAlphabet.remove(message.getPrefixChar());
-
-		// TODO: Remove
 		assert(returnValue);
 
 		Character[] characterList = new Character[reducedAlphabet.size()];
