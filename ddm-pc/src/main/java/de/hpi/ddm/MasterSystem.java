@@ -50,7 +50,7 @@ public class MasterSystem {
 			@Override
 			public void run() {
 				for (int i = 0; i < c.getNumWorkers(); i++)
-					system.actorOf(Worker.props(), Worker.DEFAULT_NAME + i);
+					system.actorOf(Worker.props(master), Worker.DEFAULT_NAME + i);
 				
 				if (!c.isStartPaused())
 					system.actorSelection("/user/" + Master.DEFAULT_NAME).tell(new Master.StartMessage(), ActorRef.noSender());

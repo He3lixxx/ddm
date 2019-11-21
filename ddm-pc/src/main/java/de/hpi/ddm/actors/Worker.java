@@ -7,10 +7,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.Set;
 
-import akka.actor.AbstractLoggingActor;
-import akka.actor.ActorRef;
-import akka.actor.PoisonPill;
-import akka.actor.Props;
+import akka.actor.*;
 import akka.cluster.Cluster;
 import akka.cluster.ClusterEvent.CurrentClusterState;
 import akka.cluster.ClusterEvent.MemberRemoved;
@@ -29,11 +26,12 @@ public class Worker extends AbstractLoggingActor {
 
 	public static final String DEFAULT_NAME = "worker";
 
-	public static Props props() {
-		return Props.create(Worker.class);
-	}
+	public static Props props(ActorRef unsolvedHashProvider) {
+		return Props.create(Worker.class, () -> new Worker(unsolvedHashProvider));
+}
 
-	public Worker() throws NoSuchAlgorithmException {
+	public Worker(ActorRef unsolvedHashProvider) throws NoSuchAlgorithmException {
+		this.unsolvedHashProvider = unsolvedHashProvider;
 		this.cluster = Cluster.get(this.context().system());
 	}
 
@@ -47,6 +45,14 @@ public class Worker extends AbstractLoggingActor {
 
 	private Member masterSystem;
 	private final Cluster cluster;
+
+	// This is a actor on the same system that can provide us with the unsolved hashes (by passing a reference inside
+	// the system). It can also be null. In this case, _this_ actor is the provider of this system and needs to collect
+	// the unsolved hashes from the masterSystem.
+	private ActorRef unsolvedHashProvider;
+	private ActorSelection master;
+
+	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 
 	// TODO: If lookup is O(1) anyways, distinguishing between the two doesn't really make any sense.
 	private Set<ByteBuffer> unsolvedHintHashes;
@@ -80,9 +86,16 @@ public class Worker extends AbstractLoggingActor {
 				.match(CurrentClusterState.class, this::handle)
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
+
 				.match(Master.UnsolvedHashesMessage.class, this::handle)
+				.match(Master.UnsolvedHashesReferenceMessage.class, this::handle)
+
+				.match(Master.SendUnsolvedHashesReferenceMessage.class, this::handle)
+				.match(Master.DistributeUnsolvedHashesMessage.class, this::handle)
+
 				.match(Master.HintWorkPacketMessage.class, this::handle)
 				.match(Master.PasswordWorkPacketMessage.class, this::handle)
+
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -124,9 +137,9 @@ public class Worker extends AbstractLoggingActor {
 		this.sender().tell(new Master.DoneMessage(), this.self());
 	}
 
-	//receive the sets of unsolved hashes and save them locally
-	//TODO: possible improvement - save them only once per node instead of once per actor
 	private void handle(Master.UnsolvedHashesMessage message){
+		System.out.println("Unsolved hashes received as serialized data.");
+
 		this.unsolvedHintHashes = new HashSet<>(message.getHintHashes().length);
 		for (byte[] hintHash : message.getHintHashes()) {
 			this.unsolvedHintHashes.add(wrap(hintHash));
@@ -138,6 +151,31 @@ public class Worker extends AbstractLoggingActor {
 		}
 
 		this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
+	}
+
+	private void handle(Master.UnsolvedHashesReferenceMessage message){
+		System.out.println("Unsolved hashes received as reference");
+		this.unsolvedHintHashes = message.getHintHashes();
+		this.unsolvedPasswordHashes = message.getPasswordHashes();
+
+		// Message might have come from someone who is _not_ the master, but we want to tell the master so we can get
+		// work anyway
+		this.master.tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
+	}
+
+	private void handle(Master.SendUnsolvedHashesReferenceMessage message) {
+		this.actorsWaitingForUnsolvedReferenceMessages.add(this.sender());
+	}
+
+	private void handle(Master.DistributeUnsolvedHashesMessage message) {
+		// TODO: Before sharing, make read only to ensure multithreading correctness?
+		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(
+				this.unsolvedHintHashes, this.unsolvedPasswordHashes);
+
+		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {
+			actor.tell(msg, this.self());
+		}
+		this.actorsWaitingForUnsolvedReferenceMessages.clear();
 	}
 
 	private void handle(CurrentClusterState message) {
@@ -154,10 +192,15 @@ public class Worker extends AbstractLoggingActor {
 	private void register(Member member) {
 		if ((this.masterSystem == null) && member.hasRole(MasterSystem.MASTER_ROLE)) {
 			this.masterSystem = member;
+			ActorSelection masterActor = this.getContext().actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME);
 
-			this.getContext()
-					.actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME)
-					.tell(new Master.RegistrationMessage(), this.self());
+			this.master = masterActor;
+			this.master.tell(new Master.RegistrationMessage(), this.self());
+			if (this.unsolvedHashProvider == null) {
+				masterActor.tell(new Master.SendUnsolvedHashesMessage(), this.self());
+			} else {
+				this.unsolvedHashProvider.tell(new Master.SendUnsolvedHashesReferenceMessage(), this.self());
+			}
 		}
 	}
 
@@ -167,19 +210,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private byte[] hash(String line) {
-		// TODO: What does String.valueOf(line) do here? Can we remove it?
-		return this.digest.digest(String.valueOf(line).getBytes(StandardCharsets.UTF_8));
-	}
-
-	// TODO: Remove - is slow anyway
-	public static String hashToString(ByteBuffer hash) {
-		StringBuilder stringBuilder = new StringBuilder();
-
-		ByteBuffer copy = hash.duplicate(); // will only duplicate the internally stored position.
-		while(copy.hasRemaining()) {
-			stringBuilder.append(Integer.toString((copy.get() & 0xff) + 0x100, 16).substring(1));
-		}
-		return stringBuilder.toString();
+		return this.digest.digest(line.getBytes(StandardCharsets.UTF_8));
 	}
 
 	// Check all permutations of an array using Heap's Algorithm

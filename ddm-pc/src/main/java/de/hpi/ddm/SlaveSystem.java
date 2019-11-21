@@ -39,8 +39,12 @@ public class SlaveSystem {
 		Cluster.get(system).registerOnMemberUp(new Runnable() {
 			@Override
 			public void run() {
-				for (int i = 0; i < c.getNumWorkers(); i++)
-					system.actorOf(Worker.props(), Worker.DEFAULT_NAME + i);
+				if(c.getNumWorkers() == 0)
+					return;
+
+				ActorRef unsolvedHashProvider = system.actorOf(Worker.props(null), Worker.DEFAULT_NAME + 0);
+				for (int i = 1; i < c.getNumWorkers(); i++)
+					system.actorOf(Worker.props(unsolvedHashProvider), Worker.DEFAULT_NAME + i);
 			}
 		});
 

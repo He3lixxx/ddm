@@ -88,17 +88,35 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data
-	private static class InitializeWorkersMessage implements Serializable {
+	public static class SendUnsolvedHashesMessage implements Serializable {
+		private static final long serialVersionUID = 8996201587099482364L;
+	}
+
+	@Data
+	public static class SendUnsolvedHashesReferenceMessage implements Serializable {
+		private static final long serialVersionUID = 7887543928732622009L;
+	}
+
+	@Data
+	static class DistributeUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 5705955020161158225L;
 	}
 
 	// TODO (later): Don't sent both at the same time - we only need the hint hashes in the first phase
 	//  and the password hashes in the second phase -- this goes along with using Akka Distributed Data for the syncing.
+	// TODO: Unify to single list -- distinguishing between hint and pw hashes should not be necessary
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
 		private byte[][] hintHashes;
 		private byte[][] passwordHashes;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	static class UnsolvedHashesReferenceMessage implements Serializable {
+		private static final long serialVersionUID = 6962155509875752392L;
+		private Set<ByteBuffer> hintHashes;
+		private Set<ByteBuffer> passwordHashes;
 	}
 
 	@Data
@@ -178,8 +196,8 @@ public class Master extends AbstractLoggingActor {
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
     private Map<ActorRef, Object> currentlyWorkingOn = new HashMap<>();
 
-	// uninitialized means has not got information about the hashes we are searching yet
-	private Set<ActorRef> uninitializedWorkers = new HashSet<>();
+	private Set<ActorRef> actorsWaitingForUnsolvedMessages = new HashSet<>();
+	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 	// idle means that currently, no work packet is assigned to this worker
 	private Set<ActorRef> idleWorkers = new HashSet<>();
 
@@ -201,6 +219,7 @@ public class Master extends AbstractLoggingActor {
 
 	private final ActorRef reader;
 	private final ActorRef collector;
+	// TODO: Do we need this?
 	private final List<ActorRef> workers;
 
 	private long startTime;
@@ -266,8 +285,10 @@ public class Master extends AbstractLoggingActor {
 				.match(BatchMessage.class, this::handle)
 				.match(RegistrationMessage.class, this::handle)
 				.match(CreateHintWorkPacketsMessage.class, this::handle)
-				.match(InitializeWorkersMessage.class, this::handle)
+				.match(SendUnsolvedHashesMessage.class, this::handle)
+				.match(SendUnsolvedHashesReferenceMessage.class, this::handle)
 				.match(DoneMessage.class, this::handle)
+				.match(DistributeUnsolvedHashesMessage.class, this::handle)
 				.match(DistributeWorkPacketsMessage.class, this::handle)
 				.match(UnsolvedHashesReceivedMessage.class, this::handle)
 				.match(HintSolvedMessage.class, this::handle)
@@ -286,10 +307,9 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(BatchMessage message) {
 		if (message.getLines().isEmpty()) {
-			this.self().tell(new InitializeWorkersMessage(), this.self());
-			this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
-
 			this.readingDone = true;
+			this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
+			this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
 			return;
 		}
 
@@ -357,32 +377,7 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	protected void handle(InitializeWorkersMessage message) {
-		// TODO: Cache the byte representation? --> We need more complex sharing logic anyway.
-        byte[][] hintHashes = new byte[this.unsolvedHintHashes.size()][];
-        int i = 0;
-        for (ByteBuffer hintHash : this.unsolvedHintHashes) {
-            hintHashes[i++] = hintHash.array();
-        }
-
-        byte[][] passwordHashes = new byte[this.unsolvedPasswordHashes.size()][];
-        i = 0;
-        for (ByteBuffer passwordHash : this.unsolvedPasswordHashes) {
-            passwordHashes[i++] = passwordHash.array();
-        }
-
-		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(hintHashes, passwordHashes);
-
-		for (ActorRef worker : this.uninitializedWorkers) {
-			// TODO: What happens if the hashes are too big for one message here?) --> Use Akka Distributed Data
-			worker.tell(msg, this.self());
-		}
-		// TODO: This is an ugly fix -- fix
-		this.uninitializedWorkers.clear();
-	}
-
 	protected void handle(UnsolvedHashesReceivedMessage message) {
-		this.uninitializedWorkers.remove(this.sender());
 		this.idleWorkers.add(this.sender());
 
 		// If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
@@ -459,18 +454,56 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(RegistrationMessage message) {
 		this.context().watch(this.sender());
 		this.workers.add(this.sender());
-		this.uninitializedWorkers.add(this.sender());
 		this.log().info("Registered {}", this.sender());
+	}
 
-		if (this.readingDone) {
-			this.self().tell(new InitializeWorkersMessage(), this.self());
+	protected void handle(SendUnsolvedHashesMessage message) {
+		this.actorsWaitingForUnsolvedMessages.add(this.sender());
+		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
+	}
+
+	protected void handle(SendUnsolvedHashesReferenceMessage message) {
+		this.actorsWaitingForUnsolvedReferenceMessages.add(this.sender());
+		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
+	}
+
+	protected void handle(DistributeUnsolvedHashesMessage message) {
+		// TODO: Versioning, multiple iterations
+		if (!this.readingDone) {
+			return;
 		}
+
+		// TODO: Cache the byte representation? --> We need more complex sharing logic anyway.
+		byte[][] hintHashes = new byte[this.unsolvedHintHashes.size()][];
+		int i = 0;
+		for (ByteBuffer hintHash : this.unsolvedHintHashes) {
+			hintHashes[i++] = hintHash.array();
+		}
+
+		byte[][] passwordHashes = new byte[this.unsolvedPasswordHashes.size()][];
+		i = 0;
+		for (ByteBuffer passwordHash : this.unsolvedPasswordHashes) {
+			passwordHashes[i++] = passwordHash.array();
+		}
+		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(hintHashes, passwordHashes);
+
+		// TODO: What happens if the hashes are too big for one message here?)
+		for (ActorRef actor : this.actorsWaitingForUnsolvedMessages) {
+			actor.tell(msg, this.self());
+		}
+		this.actorsWaitingForUnsolvedMessages.clear();
+
+		UnsolvedHashesReferenceMessage referenceMessage = new UnsolvedHashesReferenceMessage(
+				this.unsolvedHintHashes, this.unsolvedPasswordHashes);
+		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {
+			actor.tell(referenceMessage, this.self());
+		}
+		this.actorsWaitingForUnsolvedReferenceMessages.clear();
 	}
 	
 	protected void handle(Terminated message) {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
-		this.uninitializedWorkers.remove(message.getActor());
 		this.idleWorkers.remove(message.getActor());
 
 		Object lostWork = this.currentlyWorkingOn.remove(message.getActor());
