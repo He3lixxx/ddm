@@ -137,20 +137,27 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.UnsolvedHashesMessage message){
-		System.out.println("Unsolved hashes received as serialized data.");
+		if (message.getHashes() == null) {
+			this.unsolvedHashesReceived = true;
+			this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
+			this.self().tell(new Master.DistributeUnsolvedHashesMessage(), this.self());
+			return;
+		}
 
-		this.unsolvedHashes = new HashSet<>(message.getHashes().length);
+		if (message.getChunkOffset() == 0) {
+			this.unsolvedHashes = new HashSet<>();
+		}
+
+		this.log().info("Unsolved hashes received as serialized data -- offset " + message.getChunkOffset());
 		for (byte[] hintHash : message.getHashes()) {
 			this.unsolvedHashes.add(wrap(hintHash));
 		}
 
-		this.unsolvedHashesReceived = true;
-		this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
-		this.self().tell(new Master.DistributeUnsolvedHashesMessage(), this.self());
+		this.sender().tell(new Master.SendUnsolvedHashesMessage(message.getChunkOffset() + 1), this.self());
 	}
 
 	private void handle(Master.UnsolvedHashesReferenceMessage message){
-		System.out.println("Unsolved hashes received as reference");
+		this.log().info("Unsolved hashes received as reference");
 		this.unsolvedHashes = message.getHashes();
 
 		// Message might have come from someone who is _not_ the master, but we want to tell the master so we can get
@@ -195,7 +202,7 @@ public class Worker extends AbstractLoggingActor {
 			this.master = masterActor;
 			this.master.tell(new Master.RegistrationMessage(), this.self());
 			if (this.unsolvedHashProvider == null) {
-				masterActor.tell(new Master.SendUnsolvedHashesMessage(), this.self());
+				masterActor.tell(new Master.SendUnsolvedHashesMessage(0), this.self());
 			} else {
 				this.unsolvedHashProvider.tell(new Master.SendUnsolvedHashesReferenceMessage(), this.self());
 			}

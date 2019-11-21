@@ -28,12 +28,11 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
-	// TODO: Make these false
 	// Show information about how many hashes still need to be cracked.
-	public static final boolean LOG_PROGRESS = true;
+	public static final boolean LOG_PROGRESS = false;
 
 	// ---- Assumptions on the limitations of large messages
-	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = true;
+	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
 
 	// If not using the large message channel, the maximum frame size should be 128kB
 	// TODO: This should probably use the large message channel, maybe even with a cranked up maximum-large-frame-size
@@ -44,8 +43,9 @@ public class Master extends AbstractLoggingActor {
 	// For smaller messages, it's usually less
 	public static final int UNSOLVED_HASHES_MESSAGE_OVERHEAD = 32 * 1024;
 	public static final int REQUIRED_SPACE_PER_STORED_HASH = 34; // Bytes, measured.
-	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE =
-			(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
+	// TODO: Undo debug override.
+	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE = 100;
+	//		(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
 
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
@@ -88,9 +88,10 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 5729686774061377664L;
 	}
 
-	@Data
+	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class SendUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8996201587099482364L;
+		private int chunkOffset;
 	}
 
 	@Data
@@ -103,11 +104,12 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 5705955020161158225L;
 	}
 
-	// TODO: Unify to single list -- distinguishing between hint and pw hashes should not be necessary
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
+		// can be null if maximum offset was reached. If it is null, the receiver knows that all hashes have been sent.
 		private byte[][] hashes;
+		private int chunkOffset;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
@@ -193,13 +195,16 @@ public class Master extends AbstractLoggingActor {
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
     private Map<ActorRef, Object> currentlyWorkingOn = new HashMap<>();
 
-	private Set<ActorRef> actorsWaitingForUnsolvedMessages = new HashSet<>();
+    // Maps from ActorRef to the offset in this.unsolvedHashBytes for the chunk to be sent.
+	private Map<ActorRef, Integer> actorsWaitingForUnsolvedMessages = new HashMap<>();
 	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 	// idle means that currently, no work packet is assigned to this worker
 	private Set<ActorRef> idleWorkers = new HashSet<>();
 
 	// required to send UnsolvedHashesReferenceMessages
 	private Set<ByteBuffer> unsolvedHashes = new HashSet<>();
+	// required to send UnsolvedHashesMessage - we only want to build this once and reuse it.
+	private byte[][][] unsolvedHashBytes;
 
 	// required to find out whether we are done solving hints / solving passwords
 	private int unsolvedHintHashes = 0;
@@ -249,7 +254,7 @@ public class Master extends AbstractLoggingActor {
 				r.nextBytes(array[i]);
 			}
 
-			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array);
+			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array, 0);
 
 			Kryo kryo = new Kryo();
 			kryo.register(UnsolvedHashesMessage.class);
@@ -457,7 +462,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(SendUnsolvedHashesMessage message) {
-		this.actorsWaitingForUnsolvedMessages.add(this.sender());
+		this.actorsWaitingForUnsolvedMessages.put(this.sender(), message.getChunkOffset());
 		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
 	}
 
@@ -467,22 +472,48 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(DistributeUnsolvedHashesMessage message) {
-		// TODO: Versioning, multiple iterations
+		// TODO: Versioning to allow multiple iterations if size of all hashes does not fit into memory
 		if (!this.readingDone) {
 			return;
 		}
 
-		// TODO: Cache the byte representation? --> We need more complex sharing logic anyway.
-		byte[][] hashes = new byte[this.unsolvedHashes.size()][];
-		int i = 0;
-		for (ByteBuffer hintHash : this.unsolvedHashes) {
-			hashes[i++] = hintHash.array();
-		}
-		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(hashes);
+		// Lazily build a chunked representation of the hashes for sending
+		if (this.unsolvedHashBytes == null) {
+			int unsolvedHashes = this.unsolvedHashes.size();
+			int unsolvedHashesLeft = unsolvedHashes;
+			int chunk_count = (int) Math.ceil((double)unsolvedHashes / HASHES_PER_UNSOLVED_HASHES_MESSAGE);
+			this.unsolvedHashBytes = new byte[chunk_count][][];
 
-		// TODO: What happens if the hashes are too big for one message here?)
-		for (ActorRef actor : this.actorsWaitingForUnsolvedMessages) {
-			actor.tell(msg, this.self());
+			int chunk_id = 0;
+			int offset_inside_chunk = 0;
+			for (ByteBuffer hash : this.unsolvedHashes) {
+				assert(offset_inside_chunk <= HASHES_PER_UNSOLVED_HASHES_MESSAGE);
+
+				if (offset_inside_chunk == HASHES_PER_UNSOLVED_HASHES_MESSAGE) {
+					offset_inside_chunk = 0;
+					chunk_id++;
+					unsolvedHashesLeft -= HASHES_PER_UNSOLVED_HASHES_MESSAGE;
+				}
+				assert(chunk_id < chunk_count);
+
+				if (offset_inside_chunk == 0) {
+					int chunk_size = Math.min(HASHES_PER_UNSOLVED_HASHES_MESSAGE, unsolvedHashesLeft);
+					this.unsolvedHashBytes[chunk_id] = new byte[chunk_size][];
+				}
+
+				this.unsolvedHashBytes[chunk_id][offset_inside_chunk++] = hash.array();
+			}
+		}
+
+		for (Map.Entry<ActorRef, Integer> entry : this.actorsWaitingForUnsolvedMessages.entrySet()) {
+			ActorRef actor = entry.getKey();
+			int chunk_offset = entry.getValue();
+
+			if (chunk_offset >= this.unsolvedHashBytes.length) {
+				actor.tell(new UnsolvedHashesMessage(null, chunk_offset), this.self());
+			} else {
+				actor.tell(new UnsolvedHashesMessage(this.unsolvedHashBytes[chunk_offset], chunk_offset), this.self());
+			}
 		}
 		this.actorsWaitingForUnsolvedMessages.clear();
 
