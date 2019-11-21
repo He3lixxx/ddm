@@ -25,7 +25,7 @@ public class Master extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "master";
 
 	// Show information about how many hashes still need to be cracked.
-	public static final boolean LOG_PROGRESS = false;
+	public static final boolean LOG_PROGRESS = true;
 
 	// ---- Assumptions on the limitations of large messages
 	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
@@ -71,48 +71,64 @@ public class Master extends AbstractLoggingActor {
 	// Actor Messages //
 	////////////////////
 
+	// MasterSystem to Master: Start reading the csv file.
 	@Data
 	public static class StartMessage implements Serializable {
 		private static final long serialVersionUID = -50374816448627600L;
 	}
-	
+
+	// Reader to master: List of lines read from the csv file.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class BatchMessage implements Serializable {
 		private static final long serialVersionUID = 8343040942748609598L;
 		private List<String[]> lines;
 	}
 
+	// Worker to master: I was born.
 	@Data
 	static class RegistrationMessage implements Serializable {
 		private static final long serialVersionUID = 3303081601659723997L;
 	}
 
+	// Master to self: I'm done reading the file. Create hint work packages.
 	@Data
 	private static class CreateHintWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 4016375330343989553L;
 	}
 
+	// TODO: Create the packages dynamically whenever an entry has all hints cracked.
+	// Master to self: I'm done cracking the hints. Create password work packages.
 	@Data
 	private static class CreatePasswordWorkPackets implements Serializable {
 		private static final long serialVersionUID = 5729686774061377664L;
 	}
 
+	// Master to Worker: I have a new set of hashes. Unset yours and query the new ones.
+	@Data
+	public static class GetUnsolvedHashesMessage implements Serializable {
+		private static final long serialVersionUID = 5208022574113756999L;
+	}
+
+	// Worker to Master: Send me the unsolved hashes of the current iteration, starting from chunkOffset.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class SendUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8996201587099482364L;
 		private int chunkOffset;
 	}
 
+	// Worker to data providing Worker or Master: Send me the unsolved hashes, use a reference.
 	@Data
 	public static class SendUnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 7887543928732622009L;
 	}
 
+	// Master to self: Send out UnsolvedHashesMessages to everyone waiting for one.
 	@Data
 	static class DistributeUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 5705955020161158225L;
 	}
 
+	// Master to data provider workers: Serialized version of the unsolved hashes.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
@@ -121,22 +137,26 @@ public class Master extends AbstractLoggingActor {
 		private int chunkOffset;
 	}
 
+	// Data provider to local workers: Reference version of the unsolved hashes (prevent copy in local ram).
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 6962155509875752392L;
 		private Set<ByteBuffer> hashes;
 	}
 
+	// Worker to master: I know what hashes to look for. Give me some work!
 	@Data
 	static class UnsolvedHashesReceivedMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
 	}
 
+	// Master to self: Someone wants work. Distribute work.
 	@Data
 	private static class DistributeWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 3327522514637238884L;
 	}
 
+	// Worker to master: I found a match for this hint hash.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class HintSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 3443862827428452603L;
@@ -144,6 +164,7 @@ public class Master extends AbstractLoggingActor {
 		private String hint;
 	}
 
+	// Worker to master: I found a match for this password hash.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class PasswordSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 5219945881030570315L;
@@ -151,11 +172,13 @@ public class Master extends AbstractLoggingActor {
 		private String password;
 	}
 
+	// Worker to master: I'm done with my current task. Mark the task as done and give me a new one.
 	@Data
 	static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
 	}
 
+	// Master to worker: Try out all combinations based on this alphabet and these fixed chars.
 	// TODO: Add a second prefixChar to this and the password equivalent to ensure optimal distribution on 240 cores.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class PasswordWorkPacketMessage implements Serializable {
@@ -168,6 +191,7 @@ public class Master extends AbstractLoggingActor {
 		char prefixChar;
 	}
 
+	// Master to worker: Try out all permutations of this alphabet, using these fixed chars.
     @Data @NoArgsConstructor @AllArgsConstructor
     static class HintWorkPacketMessage implements Serializable {
         private static final long serialVersionUID = 1147004165303224462L;
@@ -182,20 +206,19 @@ public class Master extends AbstractLoggingActor {
 	// Actor State //
 	/////////////////
 
-
-	// Structures to internally keep track of solved and unsolved tasks
-
 	@Data @NoArgsConstructor @AllArgsConstructor
 	private static class CsvEntry {
 		private int id;
-		private String name;
+		private int unsolved_hints_left;
 		private Set<Character> reducedPasswordAlphabet;
 
 		public void storeHintSolution(ByteBuffer hintHash, String hint) {
 			Set<Character> hintSet = hint.chars().mapToObj(e->(char)e).collect(Collectors.toSet());
 			reducedPasswordAlphabet.retainAll(hintSet);
+			unsolved_hints_left -= 1;
 		}
 	}
+
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
     // Will be filled when all csv lines have been read and when all hints have been solved
     private List<Object> openWorkPackets = new LinkedList<>();
@@ -226,6 +249,8 @@ public class Master extends AbstractLoggingActor {
 
 	private Set<Character> passwordChars = null;
 	private int passwordLength = -1;
+
+	private Set<Set<Character>> passwordAlphabetsWorkPacketsWereCreatedFor = new HashSet<>();
 
 	// Are we done reading the csv file (-> can we start computing hashes on the workers?)
 	private boolean readingDone = false;
@@ -310,17 +335,21 @@ public class Master extends AbstractLoggingActor {
 		return receiveBuilder()
 				.match(StartMessage.class, this::handle)
 				.match(BatchMessage.class, this::handle)
+
 				.match(RegistrationMessage.class, this::handle)
+
 				.match(CreateHintWorkPacketsMessage.class, this::handle)
+
 				.match(SendUnsolvedHashesMessage.class, this::handle)
 				.match(SendUnsolvedHashesReferenceMessage.class, this::handle)
-				.match(DoneMessage.class, this::handle)
 				.match(DistributeUnsolvedHashesMessage.class, this::handle)
-				.match(DistributeWorkPacketsMessage.class, this::handle)
 				.match(UnsolvedHashesReceivedMessage.class, this::handle)
+
+				.match(DistributeWorkPacketsMessage.class, this::handle)
 				.match(HintSolvedMessage.class, this::handle)
-				.match(CreatePasswordWorkPackets.class, this::handle)
 				.match(PasswordSolvedMessage.class, this::handle)
+				.match(DoneMessage.class, this::handle)
+
 				.match(Terminated.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
@@ -357,7 +386,7 @@ public class Master extends AbstractLoggingActor {
 			this.csvEntries.add(entry);
 
 			entry.id = Integer.parseInt(line[0]);
-			entry.name = line[1];
+			entry.unsolved_hints_left = line.length - 5;
             entry.reducedPasswordAlphabet = new HashSet<>(this.passwordChars);
 
 			ByteBuffer passwordHash = HexStringParser.parse(line[4]);
@@ -408,9 +437,6 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(UnsolvedHashesReceivedMessage message) {
 		this.idleWorkers.add(this.sender());
-
-		// If this leads to message spam / dropped letters, we can implement an own mailbox that makes sure that
-		// for some messages (e.g. the DistributeWorkPacketsMessage), only one instance will be kept in the mailbox.
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
@@ -429,13 +455,26 @@ public class Master extends AbstractLoggingActor {
 		assert(entryList != null);
 		assert(entryList.size() > 0);
 
+		boolean workPacketCreated = false;
 		for (CsvEntry entry : entryList) {
 			entry.storeHintSolution(wrappedHash, message.getHint());
+			if(entry.unsolved_hints_left == 0
+					&& !this.passwordAlphabetsWorkPacketsWereCreatedFor.contains(entry.reducedPasswordAlphabet)) {
+				this.passwordAlphabetsWorkPacketsWereCreatedFor.add(entry.reducedPasswordAlphabet);
+
+				for (char fixedChar : entry.reducedPasswordAlphabet) {
+					this.openWorkPackets.add(
+							new PasswordWorkPacketMessage(entry.reducedPasswordAlphabet, this.passwordLength, fixedChar)
+					);
+				}
+				workPacketCreated = true;
+			}
 		}
 
-		// TODO: If enough hashes are solved, start giving out tasks:
-		//   - For a line: If all hashes of this line are solved, we can start computing the hashes for
-		//   all combinations of the reduced alphabet
+		if(workPacketCreated) {
+			this.self().tell(new DistributeWorkPacketsMessage(), this.self());
+		}
+
 		// TODO: Write a readme for this
 		// We decided _not_ to start cracking the password before we have solved all hints, here's why:
 		// For a single line, let cracking another hint take time t1, cracking the PW directly take t2 and
@@ -451,28 +490,10 @@ public class Master extends AbstractLoggingActor {
 		// We have 15! possibilities for hints here, but only 15^10 possible passwords.
 		// We assume that we won't get such an input file -- we assume this is part of data preparation
 		// (the hints should just be removed in such a case)
-		if (this.unsolvedHintHashes == 0) {
-			this.self().tell(new CreatePasswordWorkPackets(), this.self());
-		}
 
 		if (LOG_PROGRESS) {
 			this.log().info("Hint solved, " + this.unsolvedHintHashes + " to do.");
 		}
-	}
-
-	protected void handle(CreatePasswordWorkPackets message) {
-		Set<Set<Character>> uniqueAlphabets = new HashSet<>();
-		for (CsvEntry entry : this.csvEntries) {
-			uniqueAlphabets.add(entry.reducedPasswordAlphabet);
-		}
-
-		for (Set<Character> uniqueAlphabet : uniqueAlphabets) {
-            for (char fixedChar : uniqueAlphabet) {
-                this.openWorkPackets.add(new PasswordWorkPacketMessage(uniqueAlphabet, this.passwordLength, fixedChar));
-            }
-		}
-
-		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(PasswordSolvedMessage message) {

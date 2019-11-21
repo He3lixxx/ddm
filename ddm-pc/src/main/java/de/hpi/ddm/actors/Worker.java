@@ -87,6 +87,7 @@ public class Worker extends AbstractLoggingActor {
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
 
+				.match(Master.GetUnsolvedHashesMessage.class, this::handle)
 				.match(Master.UnsolvedHashesMessage.class, this::handle)
 				.match(Master.UnsolvedHashesReferenceMessage.class, this::handle)
 
@@ -201,11 +202,19 @@ public class Worker extends AbstractLoggingActor {
 
 			this.master = masterActor;
 			this.master.tell(new Master.RegistrationMessage(), this.self());
-			if (this.unsolvedHashProvider == null) {
-				masterActor.tell(new Master.SendUnsolvedHashesMessage(0), this.self());
-			} else {
-				this.unsolvedHashProvider.tell(new Master.SendUnsolvedHashesReferenceMessage(), this.self());
-			}
+			this.self().tell(new Master.GetUnsolvedHashesMessage(), this.self());
+		}
+	}
+
+	private void handle(Master.GetUnsolvedHashesMessage message) {
+		// The master might send us this after some time if we need to iterate over huge input files.
+		this.unsolvedHashes = null;
+		this.unsolvedHashesReceived = false;
+
+		if (this.unsolvedHashProvider == null) {
+			this.master.tell(new Master.SendUnsolvedHashesMessage(0), this.self());
+		} else {
+			this.unsolvedHashProvider.tell(new Master.SendUnsolvedHashesReferenceMessage(), this.self());
 		}
 	}
 
