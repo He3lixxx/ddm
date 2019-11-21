@@ -25,7 +25,7 @@ public class Master extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "master";
 
 	// Show information about how many hashes still need to be cracked.
-	public static final boolean LOG_PROGRESS = true;
+	public static final boolean LOG_PROGRESS = false;
 
 	// ---- Assumptions on the limitations of large messages
 	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
@@ -94,13 +94,6 @@ public class Master extends AbstractLoggingActor {
 	@Data
 	private static class CreateHintWorkPacketsMessage implements Serializable {
 		private static final long serialVersionUID = 4016375330343989553L;
-	}
-
-	// TODO: Create the packages dynamically whenever an entry has all hints cracked.
-	// Master to self: I'm done cracking the hints. Create password work packages.
-	@Data
-	private static class CreatePasswordWorkPackets implements Serializable {
-		private static final long serialVersionUID = 5729686774061377664L;
 	}
 
 	// Master to Worker: I have a new set of hashes. Unset yours and query the new ones.
@@ -201,7 +194,7 @@ public class Master extends AbstractLoggingActor {
         char prefixChar;
     }
 
-	
+
 	/////////////////
 	// Actor State //
 	/////////////////
@@ -220,40 +213,41 @@ public class Master extends AbstractLoggingActor {
 	}
 
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
-    // Will be filled when all csv lines have been read and when all hints have been solved
-    private List<Object> openWorkPackets = new LinkedList<>();
+    // Will be filled when all csv lines have been read and when all hints for a line have been solved
+    private List<Object> openWorkPackets;
+	private Set<Set<Character>> passwordAlphabetsWorkPacketsWereCreatedFor;
 
 	// When a node goes down, we need to redistribute the work of the actors on this node
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
-    private Map<ActorRef, Object> currentlyWorkingOn = new HashMap<>();
+    private Map<ActorRef, Object> currentlyWorkingOn;
 
     // Maps from ActorRef to the offset in this.unsolvedHashBytes for the chunk to be sent.
-	private Map<ActorRef, Integer> actorsWaitingForUnsolvedMessages = new HashMap<>();
-	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
+	private Map<ActorRef, Integer> actorsWaitingForUnsolvedMessages;
+	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages;
 	// idle means that currently, no work packet is assigned to this worker
-	private Set<ActorRef> idleWorkers = new HashSet<>();
+	private Set<ActorRef> idleWorkers;
 
 	// required to send UnsolvedHashesReferenceMessages
-	private Set<ByteBuffer> unsolvedHashes = new HashSet<>();
+	private Set<ByteBuffer> unsolvedHashes;
 	// required to send UnsolvedHashesMessage - we only want to build this once and reuse it.
 	private byte[][][] unsolvedHashBytes;
 
 	// required to find out whether we are done solving hints / solving passwords
-	private int unsolvedHintHashes = 0;
-	private int unsolvedPasswordHashes = 0;
-
-	private ArrayList<CsvEntry> csvEntries = new ArrayList<>();
+	private int unsolvedHintHashes;
+	private int unsolvedPasswordHashes;
 
 	// For fast lookup when a worker has found the raw string for a hash, we keep this lookup table
-	private Map<ByteBuffer, List<CsvEntry> > hashToEntry = new HashMap<>();
+	private Map<ByteBuffer, List<CsvEntry> > hashToEntry;
 
+	// These will be kept across iterations, that's why they're initialized here.
 	private Set<Character> passwordChars = null;
 	private int passwordLength = -1;
 
-	private Set<Set<Character>> passwordAlphabetsWorkPacketsWereCreatedFor = new HashSet<>();
+	// Are we currently reading the csv file? If so, some internal structures might not be set up completely (unsolvedHashes, ...)
+	private boolean reading = false;
 
-	// Are we done reading the csv file (-> can we start computing hashes on the workers?)
-	private boolean readingDone = false;
+	// Does the csvReader have more lines to tell us? If so, we need to get back to reading after solving the current iteration.
+	private boolean readerHasLines = true;
 
 	private final ActorRef reader;
 	private final ActorRef collector;
@@ -357,20 +351,17 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(StartMessage message) {
 		this.startTime = System.currentTimeMillis();
-		
-		this.reader.tell(new Reader.ReadMessage(), this.self());
+
+		this.startReading();
 	}
 
 	protected void handle(BatchMessage message) {
+		assert(this.reading);
+
 		if (message.getLines().isEmpty()) {
-			this.readingDone = true;
-			this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
-			this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
+			this.processIteration(true);
 			return;
 		}
-
-		// tell reader to continue reading before we start computing so when we are done, the next message is ready
-		this.reader.tell(new Reader.ReadMessage(), this.self());
 
 		for (String[] line : message.getLines()) {
 			int passwordLength = Integer.parseInt(line[3]);
@@ -383,7 +374,6 @@ public class Master extends AbstractLoggingActor {
 			}
 
 			CsvEntry entry = new CsvEntry();
-			this.csvEntries.add(entry);
 
 			entry.id = Integer.parseInt(line[0]);
 			entry.unsolved_hints_left = line.length - 5;
@@ -398,16 +388,82 @@ public class Master extends AbstractLoggingActor {
 			this.addHashEntryPairToEntryLookupMap(passwordHash, entry);
 			this.unsolvedHashes.add(passwordHash);
 			this.unsolvedPasswordHashes += 1;
+			this.unsolvedHintHashes += entry.unsolved_hints_left;
 
 			for (int i = 0; i < hintHashes.length; ++i) {
 				this.addHashEntryPairToEntryLookupMap(hintHashes[i], entry);
 				this.unsolvedHashes.add(hintHashes[i]);
-				this.unsolvedHintHashes += 1;
 			}
 		}
+
+		if (this.unsolvedHashes.size() >= MAXIMUM_HASHES_TO_FIT_IN_MEMORY) {
+			this.log().error("");
+			this.log().error("The input file has more unique hashes than set in MAXIMUM_HASHES_TO_FIT_IN_MEMORY.");
+			this.log().error("The algorithm has to fall back to iterating over smaller chunks of the input.");
+			this.log().error("This is much slower than the intended use of doing only one iteration.");
+			this.log().error("If more memory is available on the machines, you should increase MAXIMUM_HASHES_TO_FIT_IN_MEMORY.");
+			this.log().error("See the README.md");
+			this.log().error("");
+			this.processIteration(false);
+			return;
+	 	}
+
+		this.reader.tell(new Reader.ReadMessage(), this.self());
+	}
+
+	private void processIteration(boolean readerWasDone) {
+		assert(this.reading);
+
+		if (readerWasDone) {
+			this.readerHasLines = false;
+		}
+
+		this.reading = false;
+
+		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
+		this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
+	}
+
+	private void startReading() {
+		assert(!this.reading);
+		// reset all internal state so that we can start filling it up again when the reader sends batches
+
+		// We can only come here if the current iteration is completely solved.
+		this.openWorkPackets = new LinkedList<>();
+		this.currentlyWorkingOn = new HashMap<>();
+
+		// Drop any open requests if there are any. We will tell the workers to ask for this again.
+		this.actorsWaitingForUnsolvedMessages = new HashMap<>();
+		this.actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
+
+		// Actors will end up here again when they have asked for the unsolved hashes.
+		this.idleWorkers = new HashSet<>();
+
+		// Data related to the iteration itself. Clear all so the reader has a fresh base to start from.
+		this.passwordAlphabetsWorkPacketsWereCreatedFor = new HashSet<>();
+		this.unsolvedHintHashes = 0;
+		this.unsolvedPasswordHashes = 0;
+		this.unsolvedHashes = new HashSet<>();
+		this.unsolvedHashBytes = null;
+		this.hashToEntry = new HashMap<>();
+
+		// Set state back to reading to queue the requests for unsolved hashes until everything is read.
+		this.reading = true;
+
+		// Sent messages to all workers that they should drop their state (unsolvedHashes, unsolvedHashesReceived)
+		// When called from the ctor, this should still be empty.
+		GetUnsolvedHashesMessage msg = new GetUnsolvedHashesMessage();
+		for (ActorRef worker : this.workers) {
+			worker.tell(msg, this.self());
+		}
+
+		// Tell the reader to start sending batches again.
+		this.reader.tell(new Reader.ReadMessage(), this.self());
 	}
 
 	protected void handle(CreateHintWorkPacketsMessage message) {
+		assert(!this.reading);
+
 		for (char c : this.passwordChars) {
 		    Set<Character> reducedAlphabet = new HashSet<>(this.passwordChars);
             reducedAlphabet.remove(c);
@@ -421,6 +477,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(DistributeWorkPacketsMessage message) {
+		assert(!this.reading);
+
 		Iterator<Object> workPacketIterator = this.openWorkPackets.iterator();
 		Iterator<ActorRef> actorIterator = this.idleWorkers.iterator();
 
@@ -435,18 +493,42 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
+	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
+		if (workPacket instanceof HintWorkPacketMessage) {
+			if (this.unsolvedHintHashes == 0) {
+				this.log().info("Dropped Hint packet as all hints are solved");
+				return;
+			}
+		} else if (workPacket instanceof PasswordWorkPacketMessage) {
+			if (this.unsolvedPasswordHashes == 0) {
+				this.log().info("Dropped Password packet as all hints are solved");
+				return;
+			}
+		}
+
+		actor.tell(workPacket, this.self());
+		Object previousValue = this.currentlyWorkingOn.put(actor, workPacket);
+		assert(previousValue == null);
+	}
+
 	protected void handle(UnsolvedHashesReceivedMessage message) {
+		assert(!this.reading);
+
 		this.idleWorkers.add(this.sender());
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(DoneMessage message) {
+		assert(!this.reading);
+
 		this.currentlyWorkingOn.remove(this.sender());
 		this.idleWorkers.add(this.sender());
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(HintSolvedMessage message) {
+		assert(!this.reading);
+
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
 		this.unsolvedHintHashes -= 1;
@@ -497,6 +579,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(PasswordSolvedMessage message) {
+		assert(!this.reading);
+
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
 		this.unsolvedPasswordHashes -= 1;
@@ -507,7 +591,12 @@ public class Master extends AbstractLoggingActor {
 
 		if (this.unsolvedPasswordHashes == 0) {
 			this.collector.tell(new Collector.PrintMessage(), this.self());
-			this.terminate();
+
+			if (this.readerHasLines) {
+				this.startReading();
+			} else {
+				this.terminate();
+			}
 		}
 
 		if (LOG_PROGRESS) {
@@ -532,8 +621,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(DistributeUnsolvedHashesMessage message) {
-		// TODO: Versioning to allow multiple iterations if size of all hashes does not fit into memory
-		if (!this.readingDone) {
+		// If we're still reading, data might be unfinished. Handle later.
+		if (this.reading) {
 			return;
 		}
 
@@ -584,7 +673,7 @@ public class Master extends AbstractLoggingActor {
 		}
 		this.actorsWaitingForUnsolvedReferenceMessages.clear();
 	}
-	
+
 	protected void handle(Terminated message) {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
@@ -599,25 +688,9 @@ public class Master extends AbstractLoggingActor {
 		this.log().info("Unregistered {}", message.getActor());
 	}
 
-	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
-	    if (workPacket instanceof HintWorkPacketMessage) {
-            if (this.unsolvedHintHashes == 0) {
-				this.log().info("Dropped Hint packet as all hints are solved");
-                return;
-            }
-        } else if (workPacket instanceof PasswordWorkPacketMessage) {
-            if (this.unsolvedPasswordHashes == 0) {
-				this.log().info("Dropped Password packet as all hints are solved");
-                return;
-            }
-        }
-
-	    actor.tell(workPacket, this.self());
-        Object previousValue = this.currentlyWorkingOn.put(actor, workPacket);
-        assert(previousValue == null);
-    }
-
 	protected void terminate() {
+		assert(!this.reading);
+
 		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
 		this.collector.tell(PoisonPill.getInstance(), ActorRef.noSender());
 

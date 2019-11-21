@@ -207,7 +207,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.GetUnsolvedHashesMessage message) {
-		// The master might send us this after some time if we need to iterate over huge input files.
+		// The master might send us this multiple times if we need to iterate over huge input files.
 		this.unsolvedHashes = null;
 		this.unsolvedHashesReceived = false;
 
