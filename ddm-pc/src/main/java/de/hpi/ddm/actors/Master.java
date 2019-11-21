@@ -6,11 +6,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import akka.actor.AbstractLoggingActor;
-import akka.actor.ActorRef;
-import akka.actor.PoisonPill;
-import akka.actor.Props;
-import akka.actor.Terminated;
+import akka.actor.*;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Output;
 import de.hpi.ddm.structures.HexStringParser;
@@ -33,19 +29,16 @@ public class Master extends AbstractLoggingActor {
 
 	// ---- Assumptions on the limitations of large messages
 	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
-
-	// If not using the large message channel, the maximum frame size should be 128kB
-	// TODO: This should probably use the large message channel, maybe even with a cranked up maximum-large-frame-size
-	//   https://doc.akka.io/docs/akka/2.5.4/scala/general/configuration.html
-	//   4 MB should be okay then.
-	public static final int MAXIMUM_MESSAGE_BYTES = 128000;
+	// The master will use a large message channel for transmitting the hashes we are trying to solve.
+	// This is by default limited to 2MiB. With huge input files, it might increase performance to increase this buffer.
+	// https://doc.akka.io/docs/akka/current/general/configuration-reference.html
+	public static final int MAXIMUM_MESSAGE_BYTES = 2 * 1024 * 1024;
 	// 32kB were measured on a huge message (4 * 1024 * 1024 Hashes = 136MB of serialized data).
 	// For smaller messages, it's usually less
 	public static final int UNSOLVED_HASHES_MESSAGE_OVERHEAD = 32 * 1024;
 	public static final int REQUIRED_SPACE_PER_STORED_HASH = 34; // Bytes, measured.
-	// TODO: Undo debug override.
-	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE = 100;
-	//		(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
+	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE =
+			(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
 
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
@@ -107,6 +100,7 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
+		// TODO: I think there is one additional send-receive block if this is null. Can we remove that?
 		// can be null if maximum offset was reached. If it is null, the receiver knows that all hashes have been sent.
 		private byte[][] hashes;
 		private int chunkOffset;
@@ -408,10 +402,23 @@ public class Master extends AbstractLoggingActor {
 			entry.storeHintSolution(wrappedHash, message.getHint());
 		}
 
-		// TODO: If all enough hashes are solved, start giving out password tasks
-		//  This is the case for all lines where we have solved all hints and where we are sure that for all lines where
-		//  unsolved hints are left, we have at least one char that is not contained in the reduced alphabet of this line
-		//  anymore.
+		// TODO: If enough hashes are solved, start giving out tasks:
+		//   - For a line: If all hashes of this line are solved, we can start computing the hashes for
+		//   all combinations of the reduced alphabet
+		// We decided _not_ to start cracking the password before we have solved all hints, here's why:
+		// For a single line, let cracking another hint take time t1, cracking the PW directly take t2 and
+		// cracking the password after cracking the next hint t3. It is true that in some cases, t1 + t3 > t2.
+		// But, we are dealing with many password lines, so while searching through the unsearched hints
+		// (spending t1), we will not only find remaining hint values for this line, but with a very high
+		// probability also for other hints. Assuming that there will be a lot of distinct resulting character sets,
+		// computing the PWs will be faster since for every line we find an additional hint, we reduce the time from
+		// t2 to t3. We conclude that, t1 + n * t3 is with high probability more efficient than n * t2.
+		//
+		// You can also construct cases where it's way more efficient to directly crack the passwords and completely
+		// ignore the hints, e.g. when the character set has 15 chars but each password only has length 10.
+		// We have 15! possibilities for hints here, but only 15^10 possible passwords.
+		// We assume that we won't get such an input file -- we assume this is part of data preparation
+		// (the hints should just be removed in such a case)
 		if (this.unsolvedHintHashes == 0) {
 			this.self().tell(new CreatePasswordWorkPackets(), this.self());
 		}
@@ -507,12 +514,13 @@ public class Master extends AbstractLoggingActor {
 
 		for (Map.Entry<ActorRef, Integer> entry : this.actorsWaitingForUnsolvedMessages.entrySet()) {
 			ActorRef actor = entry.getKey();
+			ActorSelection largeMessageForwarder = this.context().actorSelection(actor.path().child(LargeMessageForwarder.DEFAULT_NAME));
 			int chunk_offset = entry.getValue();
 
 			if (chunk_offset >= this.unsolvedHashBytes.length) {
-				actor.tell(new UnsolvedHashesMessage(null, chunk_offset), this.self());
+				largeMessageForwarder.tell(new UnsolvedHashesMessage(null, chunk_offset), this.self());
 			} else {
-				actor.tell(new UnsolvedHashesMessage(this.unsolvedHashBytes[chunk_offset], chunk_offset), this.self());
+				largeMessageForwarder.tell(new UnsolvedHashesMessage(this.unsolvedHashBytes[chunk_offset], chunk_offset), this.self());
 			}
 		}
 		this.actorsWaitingForUnsolvedMessages.clear();

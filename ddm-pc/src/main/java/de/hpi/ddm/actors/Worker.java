@@ -51,6 +51,7 @@ public class Worker extends AbstractLoggingActor {
 	// the unsolved hashes from the masterSystem.
 	private ActorRef unsolvedHashProvider;
 	private ActorSelection master;
+	private final ActorRef largeMessageForwarder = this.context().actorOf(LargeMessageForwarder.props(), LargeMessageForwarder.DEFAULT_NAME);
 
 	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 
@@ -148,7 +149,6 @@ public class Worker extends AbstractLoggingActor {
 			this.unsolvedHashes = new HashSet<>();
 		}
 
-		this.log().info("Unsolved hashes received as serialized data -- offset " + message.getChunkOffset());
 		for (byte[] hintHash : message.getHashes()) {
 			this.unsolvedHashes.add(wrap(hintHash));
 		}
@@ -157,7 +157,6 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.UnsolvedHashesReferenceMessage message){
-		this.log().info("Unsolved hashes received as reference");
 		this.unsolvedHashes = message.getHashes();
 
 		// Message might have come from someone who is _not_ the master, but we want to tell the master so we can get
