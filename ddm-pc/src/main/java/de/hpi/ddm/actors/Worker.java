@@ -159,7 +159,7 @@ public class Worker extends AbstractLoggingActor {
 	private void handle(Master.UnsolvedHashesReferenceMessage message){
 		this.unsolvedHashes = message.getHashes();
 
-		// Message might have come from someone who is _not_ the master, but we want to tell the master so we can get
+		// Message might have come from someone who is not the master, but we want to tell the master so we can get
 		// work anyway
 		this.master.tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
 	}
@@ -173,7 +173,8 @@ public class Worker extends AbstractLoggingActor {
 		if (!this.unsolvedHashesReceived)
 			return;
 
-		// TODO: Before sharing, make read only to ensure multithreading correctness?
+		// We would like to somehow make the set immutable before sharing the instance, but didn't find a way that
+		// guarantees no copies will be made, so we share a mutable set and trust us to not modify it at the receiver.
 		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(this.unsolvedHashes);
 
 		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {

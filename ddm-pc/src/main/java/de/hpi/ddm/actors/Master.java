@@ -40,6 +40,22 @@ public class Master extends AbstractLoggingActor {
 	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE =
 			(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
 
+	// Each hash has 32 byte of data -- associated ByteBuffer and array objects might add some overhead.
+	public static final long ESTIMATED_MEMORY_USAGE_PER_HASH = 64;
+
+	// TODO: Write readme for Thorsten
+	// How many hashes can the master and each worker hold in memory? This is kind of fuzzy as other resources grow
+	// linearly with the hash count as well. For 4G RAM, if 2G are usable for the hashes, assuming each hash has 32 byte
+	// of data and 32 byte overhead for ByteBuffer and array objects, we get
+	// 2 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 33554432
+	// This value is crucial for the efficiency of this algorithm. We will have to hash each element of the search space
+	// ceil(TOTAL_SEARCHED_HASHES_COUNT / MAXIMUM_HASHES_TO_FIT_IN_MEMORY) times.
+	// We strongly believe that this is the best run time you can achieve for a realistic ratio of search space size
+	// to searched hashes count.
+	// For the Odin / Thor cluster, assuming 30GB of RAM, we propose trying
+	// 30 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 503316480
+	public static final long MAXIMUM_HASHES_TO_FIT_IN_MEMORY = 33554432;
+
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
@@ -100,7 +116,6 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
-		// TODO: I think there is one additional send-receive block if this is null. Can we remove that?
 		// can be null if maximum offset was reached. If it is null, the receiver knows that all hashes have been sent.
 		private byte[][] hashes;
 		private int chunkOffset;
@@ -141,6 +156,7 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 2476247634500726940L;
 	}
 
+	// TODO: Add a second prefixChar to this and the password equivalent to ensure optimal distribution on 240 cores.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class PasswordWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 4661499214826867244L;
@@ -182,7 +198,6 @@ public class Master extends AbstractLoggingActor {
 	}
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
     // Will be filled when all csv lines have been read and when all hints have been solved
-	// TODO: Replace this with Set for a run and check that no duplicates are in there?
     private List<Object> openWorkPackets = new LinkedList<>();
 
 	// When a node goes down, we need to redistribute the work of the actors on this node
@@ -265,6 +280,22 @@ public class Master extends AbstractLoggingActor {
 			} else {
 				this.log().info("Maximum message size validation succeeded.");
 			}
+		}
+
+		long estimated_max_hash_memory_usage = MAXIMUM_HASHES_TO_FIT_IN_MEMORY * ESTIMATED_MEMORY_USAGE_PER_HASH;
+		long heapMaxSize = Runtime.getRuntime().maxMemory();
+		if (estimated_max_hash_memory_usage > heapMaxSize) {
+			this.log().error("MAXIMUM_HASHES_TO_FIT_IN_MEMORY is set too high -- huge input files will trigger OOM exceptions.");
+			this.log().error("MAXIMUM_HASHES_TO_FIT_IN_MEMORY: " + MAXIMUM_HASHES_TO_FIT_IN_MEMORY);
+			this.log().error("resulting hash size:             " + estimated_max_hash_memory_usage);
+			this.log().error("maximum heap size:               " + heapMaxSize);
+			this.log().error("To fix OOM exceptions, set an appropriate value for MAXIMUM_HASHES_TO_FIT_IN_MEMORY.");
+		}
+		else if (estimated_max_hash_memory_usage > heapMaxSize / 2) {
+			this.log().warning("MAXIMUM_HASHES_TO_FIT_IN_MEMORY is set to a high value. In case of OOM exceptions, adjust the value.");
+			this.log().warning("MAXIMUM_HASHES_TO_FIT_IN_MEMORY: " + MAXIMUM_HASHES_TO_FIT_IN_MEMORY);
+			this.log().warning("resulting hash size:             " + estimated_max_hash_memory_usage);
+			this.log().warning("maximum heap size:               " + heapMaxSize);
 		}
 
 		Reaper.watchWithDefaultReaper(this);
@@ -405,14 +436,15 @@ public class Master extends AbstractLoggingActor {
 		// TODO: If enough hashes are solved, start giving out tasks:
 		//   - For a line: If all hashes of this line are solved, we can start computing the hashes for
 		//   all combinations of the reduced alphabet
+		// TODO: Write a readme for this
 		// We decided _not_ to start cracking the password before we have solved all hints, here's why:
 		// For a single line, let cracking another hint take time t1, cracking the PW directly take t2 and
 		// cracking the password after cracking the next hint t3. It is true that in some cases, t1 + t3 > t2.
 		// But, we are dealing with many password lines, so while searching through the unsearched hints
 		// (spending t1), we will not only find remaining hint values for this line, but with a very high
 		// probability also for other hints. Assuming that there will be a lot of distinct resulting character sets,
-		// computing the PWs will be faster since for every line we find an additional hint, we reduce the time from
-		// t2 to t3. We conclude that, t1 + n * t3 is with high probability more efficient than n * t2.
+		// computing the PWs will be faster since for most lines we find an additional hint for, we reduce the time from
+		// t2 to t3. Thus, we need to compare t1 + n * t3, and this is with high probability less than n * t2.
 		//
 		// You can also construct cases where it's way more efficient to directly crack the passwords and completely
 		// ignore the hints, e.g. when the character set has 15 chars but each password only has length 10.
