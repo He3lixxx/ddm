@@ -102,8 +102,6 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 5705955020161158225L;
 	}
 
-	// TODO (later): Don't sent both at the same time - we only need the hint hashes in the first phase
-	//  and the password hashes in the second phase -- this goes along with using Akka Distributed Data for the syncing.
 	// TODO: Unify to single list -- distinguishing between hint and pw hashes should not be necessary
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
@@ -219,7 +217,6 @@ public class Master extends AbstractLoggingActor {
 
 	private final ActorRef reader;
 	private final ActorRef collector;
-	// TODO: Do we need this?
 	private final List<ActorRef> workers;
 
 	private long startTime;
