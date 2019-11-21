@@ -54,9 +54,8 @@ public class Worker extends AbstractLoggingActor {
 
 	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 
-	// TODO: If lookup is O(1) anyways, distinguishing between the two doesn't really make any sense.
-	private Set<ByteBuffer> unsolvedHintHashes;
-	private Set<ByteBuffer> unsolvedPasswordHashes;
+	private Set<ByteBuffer> unsolvedHashes;
+	private boolean unsolvedHashesReceived = false;
 
 	private MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
@@ -140,23 +139,19 @@ public class Worker extends AbstractLoggingActor {
 	private void handle(Master.UnsolvedHashesMessage message){
 		System.out.println("Unsolved hashes received as serialized data.");
 
-		this.unsolvedHintHashes = new HashSet<>(message.getHintHashes().length);
-		for (byte[] hintHash : message.getHintHashes()) {
-			this.unsolvedHintHashes.add(wrap(hintHash));
+		this.unsolvedHashes = new HashSet<>(message.getHashes().length);
+		for (byte[] hintHash : message.getHashes()) {
+			this.unsolvedHashes.add(wrap(hintHash));
 		}
 
-		this.unsolvedPasswordHashes = new HashSet<>(message.getPasswordHashes().length);
-		for (byte[] hintHash : message.getPasswordHashes()) {
-			this.unsolvedPasswordHashes.add(wrap(hintHash));
-		}
-
+		this.unsolvedHashesReceived = true;
 		this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
+		this.self().tell(new Master.DistributeUnsolvedHashesMessage(), this.self());
 	}
 
 	private void handle(Master.UnsolvedHashesReferenceMessage message){
 		System.out.println("Unsolved hashes received as reference");
-		this.unsolvedHintHashes = message.getHintHashes();
-		this.unsolvedPasswordHashes = message.getPasswordHashes();
+		this.unsolvedHashes = message.getHashes();
 
 		// Message might have come from someone who is _not_ the master, but we want to tell the master so we can get
 		// work anyway
@@ -165,12 +160,15 @@ public class Worker extends AbstractLoggingActor {
 
 	private void handle(Master.SendUnsolvedHashesReferenceMessage message) {
 		this.actorsWaitingForUnsolvedReferenceMessages.add(this.sender());
+		this.self().tell(new Master.DistributeUnsolvedHashesMessage(), this.self());
 	}
 
 	private void handle(Master.DistributeUnsolvedHashesMessage message) {
+		if (!this.unsolvedHashesReceived)
+			return;
+
 		// TODO: Before sharing, make read only to ensure multithreading correctness?
-		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(
-				this.unsolvedHintHashes, this.unsolvedPasswordHashes);
+		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(this.unsolvedHashes);
 
 		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {
 			actor.tell(msg, this.self());
@@ -226,7 +224,7 @@ public class Worker extends AbstractLoggingActor {
 			String raw_hint = sb.toString();
 			byte[] hashBytes = hash(raw_hint);
 			ByteBuffer wrappedHash = wrap(hashBytes);
-			if (this.unsolvedHintHashes.contains(wrappedHash))
+			if (this.unsolvedHashes.contains(wrappedHash))
 				this.sender().tell(new Master.HintSolvedMessage(hashBytes, raw_hint), this.self());
 		}
 
@@ -254,7 +252,7 @@ public class Worker extends AbstractLoggingActor {
 		{
 			byte[] hashBytes = hash(prefix);
 			ByteBuffer wrappedHash = wrap(hashBytes);
-			if (this.unsolvedPasswordHashes.contains(wrappedHash))
+			if (this.unsolvedHashes.contains(wrappedHash))
 				this.sender().tell(new Master.PasswordSolvedMessage(hashBytes, prefix), this.self());
 
 			return;

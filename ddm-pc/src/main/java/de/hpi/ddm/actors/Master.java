@@ -28,6 +28,7 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
+	// TODO: Make these false
 	// Show information about how many hashes still need to be cracked.
 	public static final boolean LOG_PROGRESS = true;
 
@@ -106,15 +107,13 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8266910043406252422L;
-		private byte[][] hintHashes;
-		private byte[][] passwordHashes;
+		private byte[][] hashes;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class UnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 6962155509875752392L;
-		private Set<ByteBuffer> hintHashes;
-		private Set<ByteBuffer> passwordHashes;
+		private Set<ByteBuffer> hashes;
 	}
 
 	@Data
@@ -199,10 +198,12 @@ public class Master extends AbstractLoggingActor {
 	// idle means that currently, no work packet is assigned to this worker
 	private Set<ActorRef> idleWorkers = new HashSet<>();
 
-	// To be distributed to new actors before they can start working
-	// TODO Später: Eventuell kann dieses Set nicht in einer Nachricht geschickt werden -> Akka Distributed Data
-	private Set<ByteBuffer> unsolvedHintHashes = new HashSet<>();  // Needed only in the first phase
-	private Set<ByteBuffer> unsolvedPasswordHashes = new HashSet<>();  // Needed only in the second phase
+	// required to send UnsolvedHashesReferenceMessages
+	private Set<ByteBuffer> unsolvedHashes = new HashSet<>();
+
+	// required to find out whether we are done solving hints / solving passwords
+	private int unsolvedHintHashes = 0;
+	private int unsolvedPasswordHashes = 0;
 
 	private ArrayList<CsvEntry> csvEntries = new ArrayList<>();
 
@@ -241,7 +242,6 @@ public class Master extends AbstractLoggingActor {
 			this.log().warning("VALIDATE_MEMORY_ESTIMATIONS is set to true. Turn off for benchmarking.");
 
 			Random r = new Random();
-			byte[][] dummy = new byte[1][];
 			byte[][] array = new byte[HASHES_PER_UNSOLVED_HASHES_MESSAGE][];
 
 			for(int i = 0; i < array.length; ++i) {
@@ -249,7 +249,7 @@ public class Master extends AbstractLoggingActor {
 				r.nextBytes(array[i]);
 			}
 
-			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array, dummy);
+			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array);
 
 			Kryo kryo = new Kryo();
 			kryo.register(UnsolvedHashesMessage.class);
@@ -337,11 +337,13 @@ public class Master extends AbstractLoggingActor {
 			}
 
 			this.addHashEntryPairToEntryLookupMap(passwordHash, entry);
-			this.unsolvedPasswordHashes.add(passwordHash);
+			this.unsolvedHashes.add(passwordHash);
+			this.unsolvedPasswordHashes += 1;
 
 			for (int i = 0; i < hintHashes.length; ++i) {
 				this.addHashEntryPairToEntryLookupMap(hintHashes[i], entry);
-				this.unsolvedHintHashes.add(hintHashes[i]);
+				this.unsolvedHashes.add(hintHashes[i]);
+				this.unsolvedHintHashes += 1;
 			}
 		}
 	}
@@ -391,7 +393,7 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(HintSolvedMessage message) {
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
-		this.unsolvedHintHashes.remove(wrappedHash);
+		this.unsolvedHintHashes -= 1;
 
 		List<CsvEntry> entryList = this.hashToEntry.get(wrappedHash);
 		assert(entryList != null);
@@ -405,12 +407,12 @@ public class Master extends AbstractLoggingActor {
 		//  This is the case for all lines where we have solved all hints and where we are sure that for all lines where
 		//  unsolved hints are left, we have at least one char that is not contained in the reduced alphabet of this line
 		//  anymore.
-		if (this.unsolvedHintHashes.isEmpty()) {
+		if (this.unsolvedHintHashes == 0) {
 			this.self().tell(new CreatePasswordWorkPackets(), this.self());
 		}
 
 		if (LOG_PROGRESS) {
-			this.log().info("Hint solved, " + this.unsolvedHintHashes.size() + " to do.");
+			this.log().info("Hint solved, " + this.unsolvedHintHashes + " to do.");
 		}
 	}
 
@@ -432,19 +434,19 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(PasswordSolvedMessage message) {
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
-		this.unsolvedPasswordHashes.remove(wrappedHash);
+		this.unsolvedPasswordHashes -= 1;
 
 		for (CsvEntry entry : this.hashToEntry.get(wrappedHash)) {
 			this.collector.tell(new Collector.CollectMessage(entry.id + ": " + message.getPassword()), this.self());
 		}
 
-		if (this.unsolvedPasswordHashes.isEmpty()) {
+		if (this.unsolvedPasswordHashes == 0) {
 			this.collector.tell(new Collector.PrintMessage(), this.self());
 			this.terminate();
 		}
 
 		if (LOG_PROGRESS) {
-			this.log().info("Password solved, " + this.unsolvedPasswordHashes.size() + " to do.");
+			this.log().info("Password solved, " + this.unsolvedPasswordHashes + " to do.");
 		}
 	}
 
@@ -471,18 +473,12 @@ public class Master extends AbstractLoggingActor {
 		}
 
 		// TODO: Cache the byte representation? --> We need more complex sharing logic anyway.
-		byte[][] hintHashes = new byte[this.unsolvedHintHashes.size()][];
+		byte[][] hashes = new byte[this.unsolvedHashes.size()][];
 		int i = 0;
-		for (ByteBuffer hintHash : this.unsolvedHintHashes) {
-			hintHashes[i++] = hintHash.array();
+		for (ByteBuffer hintHash : this.unsolvedHashes) {
+			hashes[i++] = hintHash.array();
 		}
-
-		byte[][] passwordHashes = new byte[this.unsolvedPasswordHashes.size()][];
-		i = 0;
-		for (ByteBuffer passwordHash : this.unsolvedPasswordHashes) {
-			passwordHashes[i++] = passwordHash.array();
-		}
-		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(hintHashes, passwordHashes);
+		UnsolvedHashesMessage msg = new UnsolvedHashesMessage(hashes);
 
 		// TODO: What happens if the hashes are too big for one message here?)
 		for (ActorRef actor : this.actorsWaitingForUnsolvedMessages) {
@@ -490,8 +486,7 @@ public class Master extends AbstractLoggingActor {
 		}
 		this.actorsWaitingForUnsolvedMessages.clear();
 
-		UnsolvedHashesReferenceMessage referenceMessage = new UnsolvedHashesReferenceMessage(
-				this.unsolvedHintHashes, this.unsolvedPasswordHashes);
+		UnsolvedHashesReferenceMessage referenceMessage = new UnsolvedHashesReferenceMessage(this.unsolvedHashes);
 		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {
 			actor.tell(referenceMessage, this.self());
 		}
@@ -514,12 +509,12 @@ public class Master extends AbstractLoggingActor {
 
 	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
 	    if (workPacket instanceof HintWorkPacketMessage) {
-            if (this.unsolvedHintHashes.isEmpty()) {
+            if (this.unsolvedHintHashes == 0) {
 				this.log().info("Dropped Hint packet as all hints are solved");
                 return;
             }
         } else if (workPacket instanceof PasswordWorkPacketMessage) {
-            if (this.unsolvedPasswordHashes.isEmpty()) {
+            if (this.unsolvedPasswordHashes == 0) {
 				this.log().info("Dropped Password packet as all hints are solved");
                 return;
             }
