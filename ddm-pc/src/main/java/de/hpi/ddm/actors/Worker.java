@@ -30,9 +30,13 @@ public class Worker extends AbstractLoggingActor {
 		return Props.create(Worker.class, () -> new Worker(unsolvedHashProvider));
 }
 
-	public Worker(ActorRef unsolvedHashProvider) throws NoSuchAlgorithmException {
+	private Worker(ActorRef unsolvedHashProvider) throws NoSuchAlgorithmException {
 		this.unsolvedHashProvider = unsolvedHashProvider;
 		this.cluster = Cluster.get(this.context().system());
+
+		// Create a LargeMessageForwarder for us. We don't need the reference as children will automatically be terminated
+		// when we are sent the PoisonPill
+		this.context().actorOf(LargeMessageForwarder.props(), LargeMessageForwarder.DEFAULT_NAME);
 	}
 
 	////////////////////
@@ -51,15 +55,14 @@ public class Worker extends AbstractLoggingActor {
 	// the unsolved hashes from the masterSystem.
 	private ActorRef unsolvedHashProvider;
 	private ActorSelection master;
-	private final ActorRef largeMessageForwarder = this.context().actorOf(LargeMessageForwarder.props(), LargeMessageForwarder.DEFAULT_NAME);
 
 	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 
-	private int highestRequestedIterationId = -1;
+	private long highestRequestedIterationId = -1;
 
 	private Set<ByteBuffer> unsolvedHashes;
 	private boolean unsolvedHashesReceived = false;
-	private int unsolvedHashesIterationId = -1;
+	private long unsolvedHashesIterationId = -1;
 
 	private MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
@@ -124,7 +127,7 @@ public class Worker extends AbstractLoggingActor {
 		// (this.unsolvedHashesReceived);
 
 		// We do not change the message as it might just be a passed reference if we're on the Master System.
-		Set<Character> reducedAlphabet = new HashSet<Character>(message.getReducedAlphabet());
+		Set<Character> reducedAlphabet = new HashSet<>(message.getReducedAlphabet());
 
 		// We remove the char from the alphabet on the worker because we don't want to create too many sets on the master
 		reducedAlphabet.remove(message.getPrefixChar());
@@ -218,9 +221,7 @@ public class Worker extends AbstractLoggingActor {
 	private void register(Member member) {
 		if ((this.masterSystem == null) && member.hasRole(MasterSystem.MASTER_ROLE)) {
 			this.masterSystem = member;
-			ActorSelection masterActor = this.getContext().actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME);
-
-			this.master = masterActor;
+			this.master = this.getContext().actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME);
 			this.master.tell(new Master.RegistrationMessage(), this.self());
 			this.self().tell(new Master.GetUnsolvedHashesMessage(), this.self());
 		}

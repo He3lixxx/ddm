@@ -2,6 +2,7 @@ package de.hpi.ddm.actors;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -25,23 +26,23 @@ public class Master extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "master";
 
 	// Show information about how many hashes still need to be cracked.
-	public static final boolean LOG_PROGRESS = false;
+	private static final boolean LOG_PROGRESS = false;
 
 	// ---- Assumptions on the limitations of large messages
-	public static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
+	private static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
 	// The master will use a large message channel for transmitting the hashes we are trying to solve.
 	// This is by default limited to 2MiB. With huge input files, it might increase performance to increase this buffer.
 	// https://doc.akka.io/docs/akka/current/general/configuration-reference.html
-	public static final int MAXIMUM_MESSAGE_BYTES = 2 * 1024 * 1024;
+	private static final int MAXIMUM_MESSAGE_BYTES = 2 * 1024 * 1024;
 	// 32kB were measured on a huge message (4 * 1024 * 1024 Hashes = 136MB of serialized data).
 	// For smaller messages, it's usually less
-	public static final int UNSOLVED_HASHES_MESSAGE_OVERHEAD = 32 * 1024;
-	public static final int REQUIRED_SPACE_PER_STORED_HASH = 34; // Bytes, measured.
-	public static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE =
+	private static final int UNSOLVED_HASHES_MESSAGE_OVERHEAD = 32 * 1024;
+	private static final int REQUIRED_SPACE_PER_STORED_HASH = 34; // Bytes, measured.
+	private static final int HASHES_PER_UNSOLVED_HASHES_MESSAGE =
 			(MAXIMUM_MESSAGE_BYTES - UNSOLVED_HASHES_MESSAGE_OVERHEAD) / REQUIRED_SPACE_PER_STORED_HASH;
 
 	// Each hash has 32 byte of data -- associated ByteBuffer and array objects might add some overhead.
-	public static final long ESTIMATED_MEMORY_USAGE_PER_HASH = 64;
+	private static final long ESTIMATED_MEMORY_USAGE_PER_HASH = 64;
 
 	// How many hashes can the master and each worker hold in memory? This is kind of fuzzy as other resources grow
 	// linearly with the hash count as well. For 4G RAM, if 2G are usable for the hashes, assuming each hash has 32 byte
@@ -49,7 +50,7 @@ public class Master extends AbstractLoggingActor {
 	// 2 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 33554432
 	// For the Odin / Thor cluster, assuming 30GB of RAM, we propose trying
 	// 30 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 503316480
-	public static final long MAXIMUM_HASHES_TO_FIT_IN_MEMORY = 33554432;
+	private static final long MAXIMUM_HASHES_TO_FIT_IN_MEMORY = 33554432;
 
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
@@ -93,25 +94,25 @@ public class Master extends AbstractLoggingActor {
 
 	// Master to Worker: I have a new set of hashes. Unset yours and query the new ones.
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class GetUnsolvedHashesMessage implements Serializable {
+	static class GetUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 5208022574113756999L;
         // required so that if the worker gets the hashes from the local data provider, it's already the new ones.
-		private int iterationId;
+		private long iterationId;
 	}
 
 	// Worker to Master: Send me the unsolved hashes of the current iteration, starting from chunkOffset.
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class SendUnsolvedHashesMessage implements Serializable {
+	static class SendUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8996201587099482364L;
 		private int chunkOffset;
-        private int iterationId;
+        private long iterationId;
 	}
 
 	// Worker to data providing Worker or Master: Send me the unsolved hashes, use a reference.
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class SendUnsolvedHashesReferenceMessage implements Serializable {
+	static class SendUnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 7887543928732622009L;
-        private int iterationId;
+        private long iterationId;
 	}
 
 	// Master to self: Send out UnsolvedHashesMessages to everyone waiting for one.
@@ -127,7 +128,7 @@ public class Master extends AbstractLoggingActor {
 		// can be null if maximum offset was reached. If it is null, the receiver knows that all hashes have been sent.
 		private byte[][] hashes;
 		private int chunkOffset;
-        private int iterationId;
+        private long iterationId;
 	}
 
 	// Data provider to local workers: Reference version of the unsolved hashes (prevent copy in local ram).
@@ -135,7 +136,7 @@ public class Master extends AbstractLoggingActor {
 	static class UnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 6962155509875752392L;
 		private Set<ByteBuffer> hashes;
-        private int iterationId;
+        private long iterationId;
 	}
 
 	// Worker to master: I know what hashes to look for. Give me some work!
@@ -160,7 +161,7 @@ public class Master extends AbstractLoggingActor {
 
 	// Worker to master: I found a match for this password hash.
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class PasswordSolvedMessage implements Serializable {
+	static class PasswordSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 5219945881030570315L;
 		private byte[] hash;
 		private String password;
@@ -170,7 +171,7 @@ public class Master extends AbstractLoggingActor {
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
-        private int iterationId;
+        private long iterationId;
 	}
 
 	// Master to worker: Try out all combinations based on this alphabet and these fixed chars.
@@ -185,7 +186,7 @@ public class Master extends AbstractLoggingActor {
 		// The fixed character that should be used as prefix. Used for further distributing.
 		char prefixChar;
 		// Required so when the DoneMessage comes late, the master knows whether to put the worker back in the idle queue.
-        private int iterationId;
+        private long iterationId;
 	}
 
 	// Master to worker: Try out all permutations of this alphabet, using these fixed chars.
@@ -197,7 +198,7 @@ public class Master extends AbstractLoggingActor {
         // The fixed character that should be used as prefix. Used for further distributing.
         char prefixChar;
         // Required so when the DoneMessage comes late, the master knows whether to put the worker back in the idle queue.
-        private int iterationId;
+        private long iterationId;
     }
 
 
@@ -211,7 +212,7 @@ public class Master extends AbstractLoggingActor {
 		private int unsolved_hints_left;
 		private Set<Character> reducedPasswordAlphabet;
 
-		public void storeHintSolution(ByteBuffer hintHash, String hint) {
+		void storeHintSolution(String hint) {
 			Set<Character> hintSet = hint.chars().mapToObj(e->(char)e).collect(Collectors.toSet());
 			reducedPasswordAlphabet.retainAll(hintSet);
 			unsolved_hints_left -= 1;
@@ -239,8 +240,11 @@ public class Master extends AbstractLoggingActor {
 	private byte[][][] unsolvedHashBytes;
 
 	// required to find out whether we are done solving hints / solving passwords
-	private int unsolvedHintHashes;
-	private int unsolvedPasswordHashes;
+	private long unsolvedHintHashes;
+	private long unsolvedPasswordHashes;
+
+	private long totalHintCount;
+	private long totalPasswordCount;
 
 	// For fast lookup when a worker has found the raw string for a hash, we keep this lookup table
 	private Map<ByteBuffer, List<CsvEntry> > hashToEntry;
@@ -248,7 +252,7 @@ public class Master extends AbstractLoggingActor {
 	// These will be kept across iterations, that's why they're initialized here.
 	private Set<Character> passwordChars = null;
 	private int passwordLength = -1;
-	private int iterationId = 0;
+	private long iterationId = 0;
 
 	// Are we currently reading the csv file? If so, some internal structures might not be set up completely (unsolvedHashes, ...)
 	private boolean reading = false;
@@ -266,7 +270,7 @@ public class Master extends AbstractLoggingActor {
 	// Private Methods //
 	/////////////////////
 
-	protected void addHashEntryPairToEntryLookupMap(ByteBuffer hash, CsvEntry entry) {
+	private void addHashEntryPairToEntryLookupMap(ByteBuffer hash, CsvEntry entry) {
 		List<CsvEntry> hashToEntryMapEntry = this.hashToEntry.computeIfAbsent(hash, k -> new ArrayList<>());
 		hashToEntryMapEntry.add(entry);
 	}
@@ -355,13 +359,13 @@ public class Master extends AbstractLoggingActor {
 				.build();
 	}
 
-	protected void handle(StartMessage message) {
+	private void handle(StartMessage message) {
 		this.startTime = System.currentTimeMillis();
 
 		this.startReading();
 	}
 
-	protected void handle(BatchMessage message) {
+	private void handle(BatchMessage message) {
 		assert(this.reading);
 
 		if (message.getLines().isEmpty()) {
@@ -392,13 +396,18 @@ public class Master extends AbstractLoggingActor {
 			}
 
 			this.addHashEntryPairToEntryLookupMap(passwordHash, entry);
-			this.unsolvedHashes.add(passwordHash);
-			this.unsolvedPasswordHashes += 1;
-			this.unsolvedHintHashes += entry.unsolved_hints_left;
 
-			for (int i = 0; i < hintHashes.length; ++i) {
-				this.addHashEntryPairToEntryLookupMap(hintHashes[i], entry);
-				this.unsolvedHashes.add(hintHashes[i]);
+			boolean passwordHashAdded = this.unsolvedHashes.add(passwordHash);
+			this.unsolvedPasswordHashes += passwordHashAdded ? 1 : 0;
+
+			this.totalHintCount += entry.unsolved_hints_left;
+			this.totalPasswordCount += 1;
+
+			for (ByteBuffer hintHash : hintHashes) {
+				this.addHashEntryPairToEntryLookupMap(hintHash, entry);
+
+				boolean hintHashAdded = this.unsolvedHashes.add(hintHash);
+				this.unsolvedHintHashes += hintHashAdded ? 1 : 0;
 			}
 		}
 
@@ -453,6 +462,8 @@ public class Master extends AbstractLoggingActor {
 		this.passwordAlphabetsWorkPacketsWereCreatedFor = new HashSet<>();
 		this.unsolvedHintHashes = 0;
 		this.unsolvedPasswordHashes = 0;
+		this.totalHintCount = 0;
+		this.totalPasswordCount = 0;
 		this.unsolvedHashes = new HashSet<>();
 		this.unsolvedHashBytes = null;
 		this.hashToEntry = new HashMap<>();
@@ -473,22 +484,92 @@ public class Master extends AbstractLoggingActor {
 		this.reader.tell(new Reader.ReadMessage(), this.self());
 	}
 
-	protected void handle(CreateHintWorkPacketsMessage message) {
+	private void handle(CreateHintWorkPacketsMessage message) {
 		assert(!this.reading);
 
-		for (char c : this.passwordChars) {
-		    Set<Character> reducedAlphabet = new HashSet<>(this.passwordChars);
-            reducedAlphabet.remove(c);
+		// You can also construct cases where it's way more efficient to directly crack the passwords and completely
+		// ignore the hints, e.g. when the character set has 15 chars but each password only has length 10.
+		// We have 15! possibilities for hints here, but only 15^10 possible passwords. In this case, don't create
+		// work packets for the hints, just directly start working on the passwords.
+		BigInteger possibleHints = possibleHints(this.passwordChars.size());
+		long averageHintsPerPassword = this.totalHintCount / this.totalPasswordCount;
+		BigInteger estimatedPossiblePasswordsAfterSolvingHints = estimatePossiblePasswordsAfterSolvingHints(
+				this.passwordChars.size(), this.totalPasswordCount, averageHintsPerPassword, this.passwordLength);
 
-		    for (char fixedChar : reducedAlphabet) {
-                this.openWorkPackets.add(new HintWorkPacketMessage(reducedAlphabet, fixedChar, this.iterationId));
-            }
+		BigInteger computationsWithSolvingHints = possibleHints.add(estimatedPossiblePasswordsAfterSolvingHints);
+		BigInteger computationsWithoutSolvingHints = possiblePasswords(this.passwordChars.size(), this.passwordLength);
+
+		if (computationsWithSolvingHints.compareTo(computationsWithoutSolvingHints) > 0) {
+			this.log().warning("Input data has such structure that we estimate it to be cheaper to ignore the hints.");
+			this.log().warning("-> ignoring hints.");
+
+			// No hints were solved -> all entries have the same reduced alphabet -> only need to create packets for
+			// first entry
+			Iterable<CsvEntry> firstCsvEntryList = this.hashToEntry.values().iterator().next();
+			CsvEntry firstCsvEntry = firstCsvEntryList.iterator().next();
+			this.createPasswordWorkPacketsFor(firstCsvEntry);
+
+		} else {
+			for (char c : this.passwordChars) {
+				Set<Character> reducedAlphabet = new HashSet<>(this.passwordChars);
+				reducedAlphabet.remove(c);
+
+				for (char fixedChar : reducedAlphabet) {
+					this.openWorkPackets.add(new HintWorkPacketMessage(reducedAlphabet, fixedChar, this.iterationId));
+				}
+			}
 		}
 
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
-	protected void handle(DistributeWorkPacketsMessage message) {
+	private static BigInteger possibleHints(long charSetSize) {
+		// For n chars, there are n possibilities of taking a char away. For each of these possibilities, we are left
+		// with (n-1)! permutations. So, we compute n * (n-1)! = n!
+
+		BigInteger result = BigInteger.valueOf(1);
+		for (long factor = 2; factor <= charSetSize; factor++) {
+			result = result.multiply(BigInteger.valueOf(factor));
+		}
+		return result;
+	}
+
+	private static BigInteger possiblePasswords(long charSetSize, long passwordLength) {
+		// For each position in the password, there are charSetSize different possibilities to fill this position
+		// So, we compute charSetSize ^ passwordLength
+
+		return BigInteger.valueOf(charSetSize).pow((int) passwordLength);
+	}
+
+	private static BigInteger estimatePossiblePasswordsAfterSolvingHints(long charSetSize,
+																		 long passwordCount,
+																		 long estimatedRemovedCharsPerPassword,
+																		 long passwordLength) {
+		// Alrighty, so we will get countOfReducedCharSets subsets of the character set, for each set we
+		// will have to go through possiblePasswords(reducedCharSetSize, passwordLength) possibilities.
+		// For a rough estimation, we assume that on each line we will get exactly estimatedRemovedCharsPerPassword
+		// less chars when the hints are solved. Also, we think that we are unlucky and we will get
+		// as many different reduced char sets as possible.
+
+		long reducedCharSetSize = charSetSize - estimatedRemovedCharsPerPassword;
+
+		// How many possible subsets of size reducedCharSetSize are there? We can not have more subsets than passwords
+		BigInteger countOfReducedCharSets = binomial(charSetSize, reducedCharSetSize).min(BigInteger.valueOf(passwordCount));
+
+		return countOfReducedCharSets.multiply(possiblePasswords(reducedCharSetSize, passwordLength));
+	}
+
+	// https://stackoverflow.com/questions/2201113/combinatoric-n-choose-r-in-java-math
+	private static BigInteger binomial(final long N, final long K) {
+		BigInteger ret = BigInteger.ONE;
+		for (int k = 0; k < K; k++) {
+			ret = ret.multiply(BigInteger.valueOf(N-k))
+					.divide(BigInteger.valueOf(k+1));
+		}
+		return ret;
+	}
+
+	private void handle(DistributeWorkPacketsMessage message) {
 		assert(!this.reading);
 
 		Iterator<Object> workPacketIterator = this.openWorkPackets.iterator();
@@ -505,7 +586,7 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
+	private void tellWorkPacket(ActorRef actor, Object workPacket) {
 	    assert(workPacket instanceof HintWorkPacketMessage || workPacket instanceof PasswordWorkPacketMessage);
 
 		if (workPacket instanceof HintWorkPacketMessage) {
@@ -513,7 +594,7 @@ public class Master extends AbstractLoggingActor {
 				this.log().info("Dropped Hint packet as all hints are solved");
 				return;
 			}
-		} else if (workPacket instanceof PasswordWorkPacketMessage) {
+		} else {
 			if (this.unsolvedPasswordHashes == 0) {
 				this.log().info("Dropped Password packet as all hints are solved");
 				return;
@@ -525,14 +606,14 @@ public class Master extends AbstractLoggingActor {
 		assert(previousValue == null);
 	}
 
-	protected void handle(UnsolvedHashesReceivedMessage message) {
+	private void handle(UnsolvedHashesReceivedMessage message) {
 		assert(!this.reading);
 
 		this.idleWorkers.add(this.sender());
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
-	protected void handle(DoneMessage message) {
+	private void handle(DoneMessage message) {
         // It may happen that we receive DoneMessages from a previous iteration because some actor was still going through
         // their task. In this case, we must not put the actors back in the idle queue as they may have not yet received
         // the new hashes we're searching for. Thus, we ignore the message in this case.
@@ -545,7 +626,7 @@ public class Master extends AbstractLoggingActor {
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
-	protected void handle(HintSolvedMessage message) {
+	private void handle(HintSolvedMessage message) {
 		assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
@@ -558,18 +639,10 @@ public class Master extends AbstractLoggingActor {
 
 		boolean workPacketCreated = false;
 		for (CsvEntry entry : entryList) {
-			entry.storeHintSolution(wrappedHash, message.getHint());
+			entry.storeHintSolution(message.getHint());
 			if(entry.unsolved_hints_left == 0
 					&& !this.passwordAlphabetsWorkPacketsWereCreatedFor.contains(entry.reducedPasswordAlphabet)) {
-				this.passwordAlphabetsWorkPacketsWereCreatedFor.add(entry.reducedPasswordAlphabet);
-
-				for (char fixedChar : entry.reducedPasswordAlphabet) {
-					this.openWorkPackets.add(
-							new PasswordWorkPacketMessage(
-							        entry.reducedPasswordAlphabet, this.passwordLength, fixedChar, this.iterationId
-                            )
-					);
-				}
+				this.createPasswordWorkPacketsFor(entry);
 				workPacketCreated = true;
 			}
 		}
@@ -586,19 +659,24 @@ public class Master extends AbstractLoggingActor {
 		// probability also for other hints. Assuming that there will be a lot of distinct resulting character sets,
 		// computing the PWs will be faster since for most lines we find an additional hint for, we reduce the time from
 		// t2 to t3. Thus, we need to compare t1 + n * t3, and this is with high probability less than n * t2.
-
-		// TODO: Detect this, do something:
-		// You can also construct cases where it's way more efficient to directly crack the passwords and completely
-		// ignore the hints, e.g. when the character set has 15 chars but each password only has length 10.
-		// We have 15! possibilities for hints here, but only 15^10 possible passwords.
-		// We assume that we won't get such an input file -- we assume this is part of data preparation
-		// (the hints should just be removed in such a case)
 		if (LOG_PROGRESS) {
 			this.log().info("Hint solved, " + this.unsolvedHintHashes + " to do.");
 		}
 	}
 
-	protected void handle(PasswordSolvedMessage message) {
+	private void createPasswordWorkPacketsFor(CsvEntry entry) {
+		this.passwordAlphabetsWorkPacketsWereCreatedFor.add(entry.reducedPasswordAlphabet);
+
+		for (char fixedChar : entry.reducedPasswordAlphabet) {
+			this.openWorkPackets.add(
+					new PasswordWorkPacketMessage(
+							entry.reducedPasswordAlphabet, this.passwordLength, fixedChar, this.iterationId
+					)
+			);
+		}
+	}
+
+	private void handle(PasswordSolvedMessage message) {
 		assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
@@ -622,13 +700,13 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	protected void handle(RegistrationMessage message) {
+	private void handle(RegistrationMessage message) {
 		this.context().watch(this.sender());
 		this.workers.add(this.sender());
 		this.log().info("Registered {}", this.sender());
 	}
 
-	protected void handle(SendUnsolvedHashesMessage message) {
+	private void handle(SendUnsolvedHashesMessage message) {
 	    if (message.getIterationId() != this.iterationId) {
 			assert(message.getIterationId() < this.iterationId);
 			this.sender().tell(new GetUnsolvedHashesMessage(this.iterationId), this.self());
@@ -639,7 +717,7 @@ public class Master extends AbstractLoggingActor {
 		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
 	}
 
-	protected void handle(SendUnsolvedHashesReferenceMessage message) {
+	private void handle(SendUnsolvedHashesReferenceMessage message) {
 		if (message.getIterationId() != this.iterationId) {
 			assert(message.getIterationId() < this.iterationId);
 			this.sender().tell(new GetUnsolvedHashesMessage(this.iterationId), this.self());
@@ -650,7 +728,7 @@ public class Master extends AbstractLoggingActor {
 		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
 	}
 
-	protected void handle(DistributeUnsolvedHashesMessage message) {
+	private void handle(DistributeUnsolvedHashesMessage message) {
 		// If we're still reading, data might be unfinished. Handle later.
 		if (this.reading) {
 			return;
@@ -711,7 +789,7 @@ public class Master extends AbstractLoggingActor {
 		this.actorsWaitingForUnsolvedReferenceMessages.clear();
 	}
 
-	protected void handle(Terminated message) {
+	private void handle(Terminated message) {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
 		this.idleWorkers.remove(message.getActor());
@@ -725,7 +803,7 @@ public class Master extends AbstractLoggingActor {
 		this.log().info("Unregistered {}", message.getActor());
 	}
 
-	protected void terminate() {
+	private void terminate() {
 		assert(!this.reading);
 
 		this.collector.tell(new Collector.PrintMessage(), this.self());
