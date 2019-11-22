@@ -367,7 +367,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(BatchMessage message) {
-		// assert(this.reading);
+		assert(this.reading);
 
 		if (message.getLines().isEmpty()) {
 			this.processIteration(true);
@@ -379,11 +379,10 @@ public class Master extends AbstractLoggingActor {
 			if (this.passwordLength == -1) {
 				this.passwordChars = line[2].chars().mapToObj(e -> (char) e).collect(Collectors.toSet());
 				this.passwordLength = passwordLength;
-			}
-			/*} else {
+			} else {
 				assert(passwordLength == this.passwordLength);
 				assert(line[2].chars().mapToObj(e->(char)e).collect(Collectors.toSet()).equals(this.passwordChars));
-			}*/
+			}
 
 			CsvEntry entry = new CsvEntry();
 
@@ -495,7 +494,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(DistributeWorkPacketsMessage message) {
-		// assert(!this.reading);
+		assert(!this.reading);
 
 		Iterator<Object> workPacketIterator = this.openWorkPackets.iterator();
 		Iterator<ActorRef> actorIterator = this.idleWorkers.iterator();
@@ -512,7 +511,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
-	    // assert(workPacket instanceof HintWorkPacketMessage || workPacket instanceof PasswordWorkPacketMessage);
+	    assert(workPacket instanceof HintWorkPacketMessage || workPacket instanceof PasswordWorkPacketMessage);
 
 		if (workPacket instanceof HintWorkPacketMessage) {
 			if (this.unsolvedHintHashes == 0) {
@@ -528,11 +527,11 @@ public class Master extends AbstractLoggingActor {
 
 		actor.tell(workPacket, this.self());
 		Object previousValue = this.currentlyWorkingOn.put(actor, workPacket);
-		// assert(previousValue == null);
+		assert(previousValue == null);
 	}
 
 	protected void handle(UnsolvedHashesReceivedMessage message) {
-		// assert(!this.reading);
+		assert(!this.reading);
 
 		this.idleWorkers.add(this.sender());
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
@@ -552,15 +551,15 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(HintSolvedMessage message) {
-		// assert(!this.reading);
+		assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
 		this.unsolvedHintHashes -= 1;
 
 		List<CsvEntry> entryList = this.hashToEntry.get(wrappedHash);
-		// assert(entryList != null);
-		// assert(entryList.size() > 0);
+		assert(entryList != null);
+		assert(entryList.size() > 0);
 
 		boolean workPacketCreated = false;
 		for (CsvEntry entry : entryList) {
@@ -606,7 +605,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(PasswordSolvedMessage message) {
-		// assert(!this.reading);
+		assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
@@ -673,14 +672,14 @@ public class Master extends AbstractLoggingActor {
 			int chunk_id = 0;
 			int offset_inside_chunk = 0;
 			for (ByteBuffer hash : this.unsolvedHashes) {
-				// assert(offset_inside_chunk <= HASHES_PER_UNSOLVED_HASHES_MESSAGE);
+				assert(offset_inside_chunk <= HASHES_PER_UNSOLVED_HASHES_MESSAGE);
 
 				if (offset_inside_chunk == HASHES_PER_UNSOLVED_HASHES_MESSAGE) {
 					offset_inside_chunk = 0;
 					chunk_id++;
 					unsolvedHashesLeft -= HASHES_PER_UNSOLVED_HASHES_MESSAGE;
 				}
-				// assert(chunk_id < chunk_count);
+				assert(chunk_id < chunk_count);
 
 				if (offset_inside_chunk == 0) {
 					int chunk_size = Math.min(HASHES_PER_UNSOLVED_HASHES_MESSAGE, unsolvedHashesLeft);

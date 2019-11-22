@@ -105,7 +105,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.PasswordWorkPacketMessage message){
-		// assert(this.unsolvedHashesReceived);
+		assert(this.unsolvedHashesReceived);
 
 		Set<Character> reducedAlphabet = message.getAlphabet();
 		Character[] characterList = new Character[reducedAlphabet.size()];
@@ -144,8 +144,8 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.UnsolvedHashesMessage message){
-		// assert(!this.unsolvedHashesReceived);
-		// assert(message.getHashes() != null || message.getChunkOffset() != 0);
+		assert(!this.unsolvedHashesReceived);
+		assert(message.getHashes() != null || message.getChunkOffset() != 0);
 
 		if (message.getHashes() == null) {
 			this.unsolvedHashesReceived = true;
@@ -168,7 +168,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.UnsolvedHashesReferenceMessage message){
-		// assert(!this.unsolvedHashesReceived);
+		assert(!this.unsolvedHashesReceived);
 
 		this.unsolvedHashesReceived = true;
 		this.unsolvedHashesIterationId = message.getIterationId();
@@ -191,7 +191,7 @@ public class Worker extends AbstractLoggingActor {
 			return;
 		}
 
-		// assert(this.unsolvedHashes != null);
+		assert(this.unsolvedHashes != null);
 		// We would like to somehow make the set immutable before sharing the instance, but didn't find a way that
 		// guarantees no copies will be made, so we share a mutable set and trust us to not modify it at the receiver.
 		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(
