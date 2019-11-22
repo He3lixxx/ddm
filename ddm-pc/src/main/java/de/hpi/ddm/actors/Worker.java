@@ -55,8 +55,11 @@ public class Worker extends AbstractLoggingActor {
 
 	private Set<ActorRef> actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
 
+	private int highestRequestedIterationId = -1;
+
 	private Set<ByteBuffer> unsolvedHashes;
 	private boolean unsolvedHashesReceived = false;
+	private int unsolvedHashesIterationId = -1;
 
 	private MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
@@ -102,8 +105,9 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.PasswordWorkPacketMessage message){
-		Set<Character> reducedAlphabet = message.getAlphabet();
+		// assert(this.unsolvedHashesReceived);
 
+		Set<Character> reducedAlphabet = message.getAlphabet();
 		Character[] characterList = new Character[reducedAlphabet.size()];
 		reducedAlphabet.toArray(characterList);
 
@@ -113,16 +117,17 @@ public class Worker extends AbstractLoggingActor {
 				message.getLength() - 1
 		);
 
-		this.sender().tell(new Master.DoneMessage(), this.self());
+		this.sender().tell(new Master.DoneMessage(message.getIterationId()), this.self());
 	}
 
 	private void handle(Master.HintWorkPacketMessage message){
+		// (this.unsolvedHashesReceived);
+
 		// We do not change the message as it might just be a passed reference if we're on the Master System.
 		Set<Character> reducedAlphabet = new HashSet<Character>(message.getReducedAlphabet());
 
 		// We remove the char from the alphabet on the worker because we don't want to create too many sets on the master
-		boolean returnValue = reducedAlphabet.remove(message.getPrefixChar());
-		assert(returnValue);
+		reducedAlphabet.remove(message.getPrefixChar());
 
 		Character[] characterList = new Character[reducedAlphabet.size()];
 		reducedAlphabet.toArray(characterList);
@@ -135,12 +140,17 @@ public class Worker extends AbstractLoggingActor {
 				message.getPrefixChar()
 		);
 
-		this.sender().tell(new Master.DoneMessage(), this.self());
+		this.sender().tell(new Master.DoneMessage(message.getIterationId()), this.self());
 	}
 
 	private void handle(Master.UnsolvedHashesMessage message){
+		// assert(!this.unsolvedHashesReceived);
+		// assert(message.getHashes() != null || message.getChunkOffset() != 0);
+
 		if (message.getHashes() == null) {
 			this.unsolvedHashesReceived = true;
+			this.unsolvedHashesIterationId = message.getIterationId();
+
 			this.sender().tell(new Master.UnsolvedHashesReceivedMessage(), this.self());
 			this.self().tell(new Master.DistributeUnsolvedHashesMessage(), this.self());
 			return;
@@ -154,10 +164,14 @@ public class Worker extends AbstractLoggingActor {
 			this.unsolvedHashes.add(wrap(hintHash));
 		}
 
-		this.sender().tell(new Master.SendUnsolvedHashesMessage(message.getChunkOffset() + 1), this.self());
+		this.sender().tell(new Master.SendUnsolvedHashesMessage(message.getChunkOffset() + 1, message.getIterationId()), this.self());
 	}
 
 	private void handle(Master.UnsolvedHashesReferenceMessage message){
+		// assert(!this.unsolvedHashesReceived);
+
+		this.unsolvedHashesReceived = true;
+		this.unsolvedHashesIterationId = message.getIterationId();
 		this.unsolvedHashes = message.getHashes();
 
 		// Message might have come from someone who is not the master, but we want to tell the master so we can get
@@ -167,16 +181,22 @@ public class Worker extends AbstractLoggingActor {
 
 	private void handle(Master.SendUnsolvedHashesReferenceMessage message) {
 		this.actorsWaitingForUnsolvedReferenceMessages.add(this.sender());
+		this.highestRequestedIterationId = Math.max(message.getIterationId(), this.highestRequestedIterationId);
+
 		this.self().tell(new Master.DistributeUnsolvedHashesMessage(), this.self());
 	}
 
 	private void handle(Master.DistributeUnsolvedHashesMessage message) {
-		if (!this.unsolvedHashesReceived)
+		if (!this.unsolvedHashesReceived || this.highestRequestedIterationId > this.unsolvedHashesIterationId) {
 			return;
+		}
 
+		// assert(this.unsolvedHashes != null);
 		// We would like to somehow make the set immutable before sharing the instance, but didn't find a way that
 		// guarantees no copies will be made, so we share a mutable set and trust us to not modify it at the receiver.
-		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(this.unsolvedHashes);
+		Master.UnsolvedHashesReferenceMessage msg = new Master.UnsolvedHashesReferenceMessage(
+				this.unsolvedHashes, this.unsolvedHashesIterationId
+		);
 
 		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {
 			actor.tell(msg, this.self());
@@ -208,13 +228,18 @@ public class Worker extends AbstractLoggingActor {
 
 	private void handle(Master.GetUnsolvedHashesMessage message) {
 		// The master might send us this multiple times if we need to iterate over huge input files.
+
+		if (message.getIterationId() == this.unsolvedHashesIterationId) {
+			return; // already up to date.
+		}
+
 		this.unsolvedHashes = null;
 		this.unsolvedHashesReceived = false;
 
 		if (this.unsolvedHashProvider == null) {
-			this.master.tell(new Master.SendUnsolvedHashesMessage(0), this.self());
+			this.master.tell(new Master.SendUnsolvedHashesMessage(0, message.getIterationId()), this.self());
 		} else {
-			this.unsolvedHashProvider.tell(new Master.SendUnsolvedHashesReferenceMessage(), this.self());
+			this.unsolvedHashProvider.tell(new Master.SendUnsolvedHashesReferenceMessage(message.getIterationId()), this.self());
 		}
 	}
 

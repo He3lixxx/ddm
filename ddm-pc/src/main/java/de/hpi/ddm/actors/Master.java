@@ -21,7 +21,7 @@ public class Master extends AbstractLoggingActor {
 	////////////////////////
 	// Actor Construction //
 	////////////////////////
-	
+
 	public static final String DEFAULT_NAME = "master";
 
 	// Show information about how many hashes still need to be cracked.
@@ -97,9 +97,11 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	// Master to Worker: I have a new set of hashes. Unset yours and query the new ones.
-	@Data
+	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class GetUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 5208022574113756999L;
+        // required so that if the worker gets the hashes from the local data provider, it's already the new ones.
+		private int iterationId;
 	}
 
 	// Worker to Master: Send me the unsolved hashes of the current iteration, starting from chunkOffset.
@@ -107,12 +109,14 @@ public class Master extends AbstractLoggingActor {
 	public static class SendUnsolvedHashesMessage implements Serializable {
 		private static final long serialVersionUID = 8996201587099482364L;
 		private int chunkOffset;
+        private int iterationId;
 	}
 
 	// Worker to data providing Worker or Master: Send me the unsolved hashes, use a reference.
-	@Data
+	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class SendUnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 7887543928732622009L;
+        private int iterationId;
 	}
 
 	// Master to self: Send out UnsolvedHashesMessages to everyone waiting for one.
@@ -128,6 +132,7 @@ public class Master extends AbstractLoggingActor {
 		// can be null if maximum offset was reached. If it is null, the receiver knows that all hashes have been sent.
 		private byte[][] hashes;
 		private int chunkOffset;
+        private int iterationId;
 	}
 
 	// Data provider to local workers: Reference version of the unsolved hashes (prevent copy in local ram).
@@ -135,6 +140,7 @@ public class Master extends AbstractLoggingActor {
 	static class UnsolvedHashesReferenceMessage implements Serializable {
 		private static final long serialVersionUID = 6962155509875752392L;
 		private Set<ByteBuffer> hashes;
+        private int iterationId;
 	}
 
 	// Worker to master: I know what hashes to look for. Give me some work!
@@ -166,9 +172,10 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	// Worker to master: I'm done with my current task. Mark the task as done and give me a new one.
-	@Data
+	@Data @NoArgsConstructor @AllArgsConstructor
 	static class DoneMessage implements Serializable {
 		private static final long serialVersionUID = 2476247634500726940L;
+        private int iterationId;
 	}
 
 	// Master to worker: Try out all combinations based on this alphabet and these fixed chars.
@@ -182,6 +189,8 @@ public class Master extends AbstractLoggingActor {
 		private int length;
 		// The fixed character that should be used as prefix. Used for further distributing.
 		char prefixChar;
+		// Required so when the DoneMessage comes late, the master knows whether to put the worker back in the idle queue.
+        private int iterationId;
 	}
 
 	// Master to worker: Try out all permutations of this alphabet, using these fixed chars.
@@ -192,6 +201,8 @@ public class Master extends AbstractLoggingActor {
         private Set<Character> reducedAlphabet;
         // The fixed character that should be used as prefix. Used for further distributing.
         char prefixChar;
+        // Required so when the DoneMessage comes late, the master knows whether to put the worker back in the idle queue.
+        private int iterationId;
     }
 
 
@@ -242,10 +253,10 @@ public class Master extends AbstractLoggingActor {
 	// These will be kept across iterations, that's why they're initialized here.
 	private Set<Character> passwordChars = null;
 	private int passwordLength = -1;
+	private int iterationId = 0;
 
 	// Are we currently reading the csv file? If so, some internal structures might not be set up completely (unsolvedHashes, ...)
 	private boolean reading = false;
-
 	// Does the csvReader have more lines to tell us? If so, we need to get back to reading after solving the current iteration.
 	private boolean readerHasLines = true;
 
@@ -282,7 +293,7 @@ public class Master extends AbstractLoggingActor {
 				r.nextBytes(array[i]);
 			}
 
-			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array, 0);
+			UnsolvedHashesMessage message = new UnsolvedHashesMessage(array, 0, this.iterationId);
 
 			Kryo kryo = new Kryo();
 			kryo.register(UnsolvedHashesMessage.class);
@@ -356,7 +367,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(BatchMessage message) {
-		assert(this.reading);
+		// assert(this.reading);
 
 		if (message.getLines().isEmpty()) {
 			this.processIteration(true);
@@ -366,12 +377,13 @@ public class Master extends AbstractLoggingActor {
 		for (String[] line : message.getLines()) {
 			int passwordLength = Integer.parseInt(line[3]);
 			if (this.passwordLength == -1) {
-				this.passwordChars = line[2].chars().mapToObj(e->(char)e).collect(Collectors.toSet());
+				this.passwordChars = line[2].chars().mapToObj(e -> (char) e).collect(Collectors.toSet());
 				this.passwordLength = passwordLength;
-			} else {
+			}
+			/*} else {
 				assert(passwordLength == this.passwordLength);
 				assert(line[2].chars().mapToObj(e->(char)e).collect(Collectors.toSet()).equals(this.passwordChars));
-			}
+			}*/
 
 			CsvEntry entry = new CsvEntry();
 
@@ -420,8 +432,12 @@ public class Master extends AbstractLoggingActor {
 
 		this.reading = false;
 
-		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
-		this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
+		if (this.unsolvedHashes.size() != 0) {
+			this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
+			this.self().tell(new CreateHintWorkPacketsMessage(), this.self());
+		} else {
+			this.terminate();
+		}
 	}
 
 	private void startReading() {
@@ -449,10 +465,12 @@ public class Master extends AbstractLoggingActor {
 
 		// Set state back to reading to queue the requests for unsolved hashes until everything is read.
 		this.reading = true;
+		this.iterationId += 1;
 
-		// Sent messages to all workers that they should drop their state (unsolvedHashes, unsolvedHashesReceived)
-		// When called from the ctor, this should still be empty.
-		GetUnsolvedHashesMessage msg = new GetUnsolvedHashesMessage();
+		// Send messages to all workers that they should drop their state (unsolvedHashes, unsolvedHashesReceived)
+		// When called from the ctor, this should still be empty. The iterationId is a bit tricky for a newly started system.
+		GetUnsolvedHashesMessage msg = new GetUnsolvedHashesMessage(this.iterationId);
+
 		for (ActorRef worker : this.workers) {
 			worker.tell(msg, this.self());
 		}
@@ -469,7 +487,7 @@ public class Master extends AbstractLoggingActor {
             reducedAlphabet.remove(c);
 
 		    for (char fixedChar : reducedAlphabet) {
-                this.openWorkPackets.add(new HintWorkPacketMessage(reducedAlphabet, fixedChar));
+                this.openWorkPackets.add(new HintWorkPacketMessage(reducedAlphabet, fixedChar, this.iterationId));
             }
 		}
 
@@ -477,7 +495,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(DistributeWorkPacketsMessage message) {
-		assert(!this.reading);
+		// assert(!this.reading);
 
 		Iterator<Object> workPacketIterator = this.openWorkPackets.iterator();
 		Iterator<ActorRef> actorIterator = this.idleWorkers.iterator();
@@ -494,6 +512,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void tellWorkPacket(ActorRef actor, Object workPacket) {
+	    // assert(workPacket instanceof HintWorkPacketMessage || workPacket instanceof PasswordWorkPacketMessage);
+
 		if (workPacket instanceof HintWorkPacketMessage) {
 			if (this.unsolvedHintHashes == 0) {
 				this.log().info("Dropped Hint packet as all hints are solved");
@@ -508,18 +528,23 @@ public class Master extends AbstractLoggingActor {
 
 		actor.tell(workPacket, this.self());
 		Object previousValue = this.currentlyWorkingOn.put(actor, workPacket);
-		assert(previousValue == null);
+		// assert(previousValue == null);
 	}
 
 	protected void handle(UnsolvedHashesReceivedMessage message) {
-		assert(!this.reading);
+		// assert(!this.reading);
 
 		this.idleWorkers.add(this.sender());
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
 	protected void handle(DoneMessage message) {
-		assert(!this.reading);
+        // It may happen that we receive DoneMessages from a previous iteration because some actor was still going through
+        // their task. In this case, we must not put the actors back in the idle queue as they may have not yet received
+        // the new hashes we're searching for. Thus, we ignore the message in this case.
+        if(message.getIterationId() != this.iterationId) {
+            return;
+        }
 
 		this.currentlyWorkingOn.remove(this.sender());
 		this.idleWorkers.add(this.sender());
@@ -527,15 +552,15 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(HintSolvedMessage message) {
-		assert(!this.reading);
+		// assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
 		this.unsolvedHintHashes -= 1;
 
 		List<CsvEntry> entryList = this.hashToEntry.get(wrappedHash);
-		assert(entryList != null);
-		assert(entryList.size() > 0);
+		// assert(entryList != null);
+		// assert(entryList.size() > 0);
 
 		boolean workPacketCreated = false;
 		for (CsvEntry entry : entryList) {
@@ -546,7 +571,9 @@ public class Master extends AbstractLoggingActor {
 
 				for (char fixedChar : entry.reducedPasswordAlphabet) {
 					this.openWorkPackets.add(
-							new PasswordWorkPacketMessage(entry.reducedPasswordAlphabet, this.passwordLength, fixedChar)
+							new PasswordWorkPacketMessage(
+							        entry.reducedPasswordAlphabet, this.passwordLength, fixedChar, this.iterationId
+                            )
 					);
 				}
 				workPacketCreated = true;
@@ -579,7 +606,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(PasswordSolvedMessage message) {
-		assert(!this.reading);
+		// assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
 
@@ -590,8 +617,6 @@ public class Master extends AbstractLoggingActor {
 		}
 
 		if (this.unsolvedPasswordHashes == 0) {
-			this.collector.tell(new Collector.PrintMessage(), this.self());
-
 			if (this.readerHasLines) {
 				this.startReading();
 			} else {
@@ -611,11 +636,23 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(SendUnsolvedHashesMessage message) {
+	    if (message.getIterationId() != this.iterationId) {
+			assert(message.getIterationId() < this.iterationId);
+			this.sender().tell(new GetUnsolvedHashesMessage(this.iterationId), this.self());
+            return;
+        }
+
 		this.actorsWaitingForUnsolvedMessages.put(this.sender(), message.getChunkOffset());
 		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
 	}
 
 	protected void handle(SendUnsolvedHashesReferenceMessage message) {
+		if (message.getIterationId() != this.iterationId) {
+			assert(message.getIterationId() < this.iterationId);
+			this.sender().tell(new GetUnsolvedHashesMessage(this.iterationId), this.self());
+			return;
+		}
+
 		this.actorsWaitingForUnsolvedReferenceMessages.add(this.sender());
 		this.self().tell(new DistributeUnsolvedHashesMessage(), this.self());
 	}
@@ -636,14 +673,14 @@ public class Master extends AbstractLoggingActor {
 			int chunk_id = 0;
 			int offset_inside_chunk = 0;
 			for (ByteBuffer hash : this.unsolvedHashes) {
-				assert(offset_inside_chunk <= HASHES_PER_UNSOLVED_HASHES_MESSAGE);
+				// assert(offset_inside_chunk <= HASHES_PER_UNSOLVED_HASHES_MESSAGE);
 
 				if (offset_inside_chunk == HASHES_PER_UNSOLVED_HASHES_MESSAGE) {
 					offset_inside_chunk = 0;
 					chunk_id++;
 					unsolvedHashesLeft -= HASHES_PER_UNSOLVED_HASHES_MESSAGE;
 				}
-				assert(chunk_id < chunk_count);
+				// assert(chunk_id < chunk_count);
 
 				if (offset_inside_chunk == 0) {
 					int chunk_size = Math.min(HASHES_PER_UNSOLVED_HASHES_MESSAGE, unsolvedHashesLeft);
@@ -660,14 +697,21 @@ public class Master extends AbstractLoggingActor {
 			int chunk_offset = entry.getValue();
 
 			if (chunk_offset >= this.unsolvedHashBytes.length) {
-				largeMessageForwarder.tell(new UnsolvedHashesMessage(null, chunk_offset), this.self());
+				largeMessageForwarder.tell(new UnsolvedHashesMessage(null, chunk_offset, this.iterationId), this.self());
 			} else {
-				largeMessageForwarder.tell(new UnsolvedHashesMessage(this.unsolvedHashBytes[chunk_offset], chunk_offset), this.self());
+				largeMessageForwarder.tell(
+				    new UnsolvedHashesMessage(
+				       this.unsolvedHashBytes[chunk_offset], chunk_offset, this.iterationId
+                    ), this.self()
+                );
 			}
 		}
 		this.actorsWaitingForUnsolvedMessages.clear();
 
-		UnsolvedHashesReferenceMessage referenceMessage = new UnsolvedHashesReferenceMessage(this.unsolvedHashes);
+		UnsolvedHashesReferenceMessage referenceMessage = new UnsolvedHashesReferenceMessage(
+		        this.unsolvedHashes, this.iterationId
+        );
+
 		for (ActorRef actor : this.actorsWaitingForUnsolvedReferenceMessages) {
 			actor.tell(referenceMessage, this.self());
 		}
@@ -691,6 +735,7 @@ public class Master extends AbstractLoggingActor {
 	protected void terminate() {
 		assert(!this.reading);
 
+		this.collector.tell(new Collector.PrintMessage(), this.self());
 		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
 		this.collector.tell(PoisonPill.getInstance(), ActorRef.noSender());
 
