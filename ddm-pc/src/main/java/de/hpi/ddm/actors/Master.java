@@ -43,15 +43,10 @@ public class Master extends AbstractLoggingActor {
 	// Each hash has 32 byte of data -- associated ByteBuffer and array objects might add some overhead.
 	public static final long ESTIMATED_MEMORY_USAGE_PER_HASH = 64;
 
-	// TODO: Write readme for Thorsten
 	// How many hashes can the master and each worker hold in memory? This is kind of fuzzy as other resources grow
 	// linearly with the hash count as well. For 4G RAM, if 2G are usable for the hashes, assuming each hash has 32 byte
 	// of data and 32 byte overhead for ByteBuffer and array objects, we get
 	// 2 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 33554432
-	// This value is crucial for the efficiency of this algorithm. We will have to hash each element of the search space
-	// ceil(TOTAL_SEARCHED_HASHES_COUNT / MAXIMUM_HASHES_TO_FIT_IN_MEMORY) times.
-	// We strongly believe that this is the best run time you can achieve for a realistic ratio of search space size
-	// to searched hashes count.
 	// For the Odin / Thor cluster, assuming 30GB of RAM, we propose trying
 	// 30 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 503316480
 	public static final long MAXIMUM_HASHES_TO_FIT_IN_MEMORY = 33554432;
@@ -583,7 +578,6 @@ public class Master extends AbstractLoggingActor {
 			this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 		}
 
-		// TODO: Write a readme for this
 		// We decided _not_ to start cracking the password before we have solved all hints, here's why:
 		// For a single line, let cracking another hint take time t1, cracking the PW directly take t2 and
 		// cracking the password after cracking the next hint t3. It is true that in some cases, t1 + t3 > t2.
@@ -592,13 +586,13 @@ public class Master extends AbstractLoggingActor {
 		// probability also for other hints. Assuming that there will be a lot of distinct resulting character sets,
 		// computing the PWs will be faster since for most lines we find an additional hint for, we reduce the time from
 		// t2 to t3. Thus, we need to compare t1 + n * t3, and this is with high probability less than n * t2.
-		//
+
+		// TODO: Detect this, do something:
 		// You can also construct cases where it's way more efficient to directly crack the passwords and completely
 		// ignore the hints, e.g. when the character set has 15 chars but each password only has length 10.
 		// We have 15! possibilities for hints here, but only 15^10 possible passwords.
 		// We assume that we won't get such an input file -- we assume this is part of data preparation
 		// (the hints should just be removed in such a case)
-
 		if (LOG_PROGRESS) {
 			this.log().info("Hint solved, " + this.unsolvedHintHashes + " to do.");
 		}
