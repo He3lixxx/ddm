@@ -124,7 +124,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(Master.HintWorkPacketMessage message){
-		// (this.unsolvedHashesReceived);
+		assert(this.unsolvedHashesReceived);
 
 		// We do not change the message as it might just be a passed reference if we're on the Master System.
 		Set<Character> reducedAlphabet = new HashSet<>(message.getReducedAlphabet());
@@ -250,6 +250,9 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private byte[] hash(String line) {
+		// The .getBytes call here is significantly slowing the system down. However, we are not guaranteed that
+		// we will only get Single-Byte characters (which would allow us to just permute a byte array
+		// benchmarking indicates this could be 20% faster).
 		return this.digest.digest(line.getBytes(StandardCharsets.UTF_8));
 	}
 
@@ -258,6 +261,8 @@ public class Worker extends AbstractLoggingActor {
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
 	private void recursivelyCheckPermutationsForSolutions(Character[] chars, int charsSize, char prefix) {
 		if (charsSize == 1) {
+			// You would think that re-using the same StringBuilder instance gives better performance - our profiling
+			// said using one global StringBuilder had worse performance, though.
 			StringBuilder sb = new StringBuilder(chars.length + 1);
 			sb.append(prefix);
 			for (Character c : chars)
@@ -302,6 +307,8 @@ public class Worker extends AbstractLoggingActor {
 
 		for (Character base_char : base_chars)
 		{
+			// You would think that using a StringBuilder with a push here and a pop after the recursive call would yield
+			// better performance. Our benchmarking said this is faster, though.
 			String recursionPrefix = prefix + base_char;
 			recursivelyCheckCombinationsForSolutions(base_chars, recursionPrefix, chars_left_to_add - 1);
 		}
