@@ -52,6 +52,16 @@ public class Master extends AbstractLoggingActor {
 	// 30 * 1024 * 1024 * 1024 / ESTIMATED_MEMORY_USAGE_PER_HASH = 503316480
 	private static final long MAXIMUM_HASHES_TO_FIT_IN_MEMORY = 33554432;
 
+	// It does not make sense to build a work packet that no mutable character left
+	private static final long MINIMUM_PASSWORD_PACKET_LENGTH_LEFT = 1;
+	// For hints, it does not make sense to build a work packet that has less than 5 chars left (5! = 720)
+	private static final long MINIMUM_HINT_PACKET_LENGTH_LEFT = 5;
+	// How many work packets do we want to build for hints and password (=> how many workers can we parallelize for?)
+	// Set as low as possible. Each packet occupies heap space in the master until its solved.
+	// 48 should be enough for all usual computer setup and the RasPi cluster. Increase to 240 for the Odin cluster.
+	// The program will generate the next count of packets possible with our distribution scheme
+	// Thus, the value you set here and the produced packet count this might differ significantly (factor alphabet size)
+	private static final long TARGET_WORK_PACKET_COUNT = 48;
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
@@ -175,7 +185,6 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	// Master to worker: Try out all combinations based on this alphabet and these fixed chars.
-	// TODO: Add a second prefixChar to this and the password equivalent to ensure optimal distribution on 240 cores.
 	@Data @NoArgsConstructor @AllArgsConstructor
 	static class PasswordWorkPacketMessage implements Serializable {
 		private static final long serialVersionUID = 4661499214826867244L;
@@ -183,8 +192,8 @@ public class Master extends AbstractLoggingActor {
 		private Set<Character> alphabet;
 		// The length of the password
 		private int length;
-		// The fixed character that should be used as prefix. Used for further distributing.
-		char prefixChar;
+		// The fixed String that should be used as prefix. Used for further distributing.
+		String prefixString;
 		// Required so when the DoneMessage comes late, the master knows whether to put the worker back in the idle queue.
         private long iterationId;
 	}
@@ -195,8 +204,8 @@ public class Master extends AbstractLoggingActor {
         private static final long serialVersionUID = 1147004165303224462L;
         // The alphabet. We want to compute hashes of permutations of this.
         private Set<Character> reducedAlphabet;
-        // The fixed character that should be used as prefix. Used for further distributing.
-        char prefixChar;
+        // The fixed string that should be used as prefix. Used for further distributing.
+        String prefixString;
         // Required so when the DoneMessage comes late, the master knows whether to put the worker back in the idle queue.
         private long iterationId;
     }
@@ -510,17 +519,33 @@ public class Master extends AbstractLoggingActor {
 			this.createPasswordWorkPacketsFor(firstCsvEntry);
 
 		} else {
-			for (char c : this.passwordChars) {
-				Set<Character> reducedAlphabet = new HashSet<>(this.passwordChars);
-				reducedAlphabet.remove(c);
-
-				for (char fixedChar : reducedAlphabet) {
-					this.openWorkPackets.add(new HintWorkPacketMessage(reducedAlphabet, fixedChar, this.iterationId));
-				}
+			for (char removedChar : this.passwordChars) {
+				Set<Character> reducedSet = new HashSet<>(this.passwordChars);
+				reducedSet.remove(removedChar);
+				this.createHintWorkPacketsRecursively(reducedSet, this.passwordChars.size(), "");
 			}
 		}
 
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
+	}
+
+	private void createHintWorkPacketsRecursively(Set<Character> charsLeft, long packetsOnThisRecursionLevel, String prefix) {
+		boolean prefixTooLong = charsLeft.size() <= MINIMUM_HINT_PACKET_LENGTH_LEFT;
+
+		boolean enoughWorkPackets = packetsOnThisRecursionLevel >= TARGET_WORK_PACKET_COUNT;
+		if (enoughWorkPackets || prefixTooLong) {
+			this.openWorkPackets.add(new HintWorkPacketMessage(charsLeft, prefix, this.iterationId));
+			return;
+		}
+
+		for (char fixedChar : charsLeft) {
+			Set<Character> reducedAlphabet = new HashSet<>(charsLeft);
+			reducedAlphabet.remove(fixedChar);
+
+			this.createHintWorkPacketsRecursively(reducedAlphabet,
+					packetsOnThisRecursionLevel * charsLeft.size(),
+					prefix + fixedChar);
+		}
 	}
 
 	private static BigInteger possibleHints(long charSetSize) {
@@ -669,11 +694,28 @@ public class Master extends AbstractLoggingActor {
 	private void createPasswordWorkPacketsFor(CsvEntry entry) {
 		this.passwordAlphabetsWorkPacketsWereCreatedFor.add(entry.reducedPasswordAlphabet);
 
-		for (char fixedChar : entry.reducedPasswordAlphabet) {
+		this.createPasswordWorkPacketsRecursively(entry.reducedPasswordAlphabet,
+			1,
+			""
+		);
+	}
+
+	private void createPasswordWorkPacketsRecursively(Set<Character> passwordChars, long packetsOnThisRecursionLevel, String prefix) {
+		boolean prefixTooLong = this.passwordLength - prefix.length() <= MINIMUM_PASSWORD_PACKET_LENGTH_LEFT;
+		boolean enoughWorkPackets = packetsOnThisRecursionLevel >= TARGET_WORK_PACKET_COUNT;
+
+		if (enoughWorkPackets || prefixTooLong) {
 			this.openWorkPackets.add(
-					new PasswordWorkPacketMessage(
-							entry.reducedPasswordAlphabet, this.passwordLength, fixedChar, this.iterationId
-					)
+				new PasswordWorkPacketMessage(passwordChars, this.passwordLength, prefix, this.iterationId)
+			);
+			return;
+		}
+
+		for (char fixedChar : passwordChars) {
+			this.createPasswordWorkPacketsRecursively(
+				passwordChars,
+				packetsOnThisRecursionLevel * passwordChars.size(),
+				prefix + fixedChar
 			);
 		}
 	}

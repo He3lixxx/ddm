@@ -116,8 +116,8 @@ public class Worker extends AbstractLoggingActor {
 
 		this.recursivelyCheckCombinationsForSolutions(
 				characterList,
-				Character.toString(message.getPrefixChar()),
-				message.getLength() - 1
+				message.getPrefixString(),
+				message.getLength()
 		);
 
 		this.sender().tell(new Master.DoneMessage(message.getIterationId()), this.self());
@@ -126,11 +126,8 @@ public class Worker extends AbstractLoggingActor {
 	private void handle(Master.HintWorkPacketMessage message){
 		assert(this.unsolvedHashesReceived);
 
-		// We do not change the message as it might just be a passed reference if we're on the Master System.
-		Set<Character> reducedAlphabet = new HashSet<>(message.getReducedAlphabet());
-
-		// We remove the char from the alphabet on the worker because we don't want to create too many sets on the master
-		reducedAlphabet.remove(message.getPrefixChar());
+		// Might be a reference from the master, but it was crafted just for us, so this shouldn't be a problem.
+		Set<Character> reducedAlphabet = message.getReducedAlphabet();
 
 		Character[] characterList = new Character[reducedAlphabet.size()];
 		reducedAlphabet.toArray(characterList);
@@ -140,7 +137,7 @@ public class Worker extends AbstractLoggingActor {
 		this.recursivelyCheckPermutationsForSolutions(
 				characterList,
 				characterList.length,
-				message.getPrefixChar()
+				message.getPrefixString()
 		);
 
 		this.sender().tell(new Master.DoneMessage(message.getIterationId()), this.self());
@@ -259,11 +256,11 @@ public class Worker extends AbstractLoggingActor {
 	// Check all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	private void recursivelyCheckPermutationsForSolutions(Character[] chars, int charsSize, char prefix) {
-		if (charsSize == 1) {
+	private void recursivelyCheckPermutationsForSolutions(Character[] chars, int charsToPermute, String prefix) {
+		if (charsToPermute == 1) {
 			// You would think that re-using the same StringBuilder instance gives better performance - our profiling
 			// said using one global StringBuilder had worse performance, though.
-			StringBuilder sb = new StringBuilder(chars.length + 1);
+			StringBuilder sb = new StringBuilder(chars.length + prefix.length());
 			sb.append(prefix);
 			for (Character c : chars)
 				sb.append(c.charValue());
@@ -275,27 +272,27 @@ public class Worker extends AbstractLoggingActor {
 				this.sender().tell(new Master.HintSolvedMessage(hashBytes, raw_hint), this.self());
 		}
 
-		for (int i = 0; i < charsSize; i++) {
-			this.recursivelyCheckPermutationsForSolutions(chars, charsSize - 1, prefix);
+		for (int i = 0; i < charsToPermute; i++) {
+			this.recursivelyCheckPermutationsForSolutions(chars, charsToPermute - 1, prefix);
 
-			if (charsSize % 2 == 1) {
+			if (charsToPermute % 2 == 1) {
 				// If size is odd, swap first and last element
 				char temp = chars[0];
-				chars[0] = chars[charsSize - 1];
-				chars[charsSize - 1] = temp;
+				chars[0] = chars[charsToPermute - 1];
+				chars[charsToPermute - 1] = temp;
 			} else {
 				// If size is even, swap i-th and last element
 				char temp = chars[i];
-				chars[i] = chars[charsSize - 1];
-				chars[charsSize - 1] = temp;
+				chars[i] = chars[charsToPermute - 1];
+				chars[charsToPermute - 1] = temp;
 			}
 		}
 	}
 
 	// Check all combinations of length chars_left_to_add of a character set.
 	// https://www.geeksforgeeks.org/print-all-combinations-of-given-length/
-	private void recursivelyCheckCombinationsForSolutions(Character[] base_chars, String prefix, int chars_left_to_add) {
-		if (chars_left_to_add == 0)
+	private void recursivelyCheckCombinationsForSolutions(Character[] base_chars, String prefix, int passwordLength) {
+		if (prefix.length() == passwordLength)
 		{
 			byte[] hashBytes = hash(prefix);
 			ByteBuffer wrappedHash = wrap(hashBytes);
@@ -310,7 +307,7 @@ public class Worker extends AbstractLoggingActor {
 			// You would think that using a StringBuilder with a push here and a pop after the recursive call would yield
 			// better performance. Our benchmarking said this is faster, though.
 			String recursionPrefix = prefix + base_char;
-			recursivelyCheckCombinationsForSolutions(base_chars, recursionPrefix, chars_left_to_add - 1);
+			recursivelyCheckCombinationsForSolutions(base_chars, recursionPrefix, passwordLength);
 		}
 	}
 }

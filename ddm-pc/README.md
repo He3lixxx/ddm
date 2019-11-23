@@ -1,4 +1,4 @@
-## Basic Algorithm Explanation
+## Basic Algorithm
 This implementation is based on the following algorithmic idea:
 - Load as many hashes as every node can hold into the memory
 - Distribute all the hashes we are searching for to every worker.
@@ -41,9 +41,34 @@ For input files that are smaller than the RAM size of the nodes, it
 should be possible to prevent multiple iterations, which guarantees
 minimal run times.
 
-We're pretty sure that this implementation gives the best possible
+
+#### Running on clusters with significantly more workers (Odin / Thor)
+Our algorithm generates a fixed set of work packets and distributes them
+to the next free worker. However, if we do not have any estimation beforehand
+on how many workers we can expect, we might either create way too many
+work packets, resulting in much communication overhead, or may too few
+work packets, resulting in workers being idle while they could perform work.
+
+Currently, the project is set up to work fine with up to about 110 workers,
+so for most testing environments, no changes should be required.
+If you want to run this application on the Thor cluster, we would appreciate
+it if you could increase the `TARGET_WORK_PACKET_COUNT` in the `Master` actor
+(`ddm-pc/src/main/java/de/hpi/ddm/actors/Master.java:64`)
+to the number of workers you want to start (probably 12 * 20 = 240).
+
+#### General note
+We think that this implementation gives the best possible
 performance for any input data that could realistically be encountered,
-although you can artifically craft input files that will take longer to
-process than actually necessary (e.g. if all possible passwords of the
-alphabet are valid). If you encounter any problems or bad performance,
-please contact us.
+although you can artificially craft input files that will take longer to
+process than actually necessary (e.g. if the alphabet only allows N
+distinct passwords and the file has N distinct password hashes).
+
+We did not specifically try to optimize for the sample input file that was
+given (as we expect testing to be done with different input files)
+
+If you encounter any problems or bad performance,
+please contact us - we have tested some self created input files, but
+might have missed some edge cases.
+
+If you run this implementation on the RaspberryPi or the Thor cluster, please
+let us know how it performs.
