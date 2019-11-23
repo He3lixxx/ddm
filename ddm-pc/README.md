@@ -27,9 +27,9 @@ is effectively using the disk.
 #### Preventing multiple iterations
 We were not allowed to change the command line interface, so we could not
 provide a way to set the handling of iterations there. Thus, we added a
-public constant member `MAXIMUM_HASHES_TO_FIT_IN_MEMORY` to the `Master`
+constant member `MAXIMUM_HASHES_TO_FIT_IN_MEMORY` to the `Master`
 Actor
-(`ddm/ddm-pc/src/main/java/de/hpi/ddm/actors/Master.java:52`).
+(`ddm/ddm-pc/src/main/java/de/hpi/ddm/actors/Master.java:53`).
 Here, you need to set the count of hashes that every System can fit
 in its memory. 
 

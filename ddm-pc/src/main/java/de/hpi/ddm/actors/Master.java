@@ -591,12 +591,14 @@ public class Master extends AbstractLoggingActor {
 
 		if (workPacket instanceof HintWorkPacketMessage) {
 			if (this.unsolvedHintHashes == 0) {
-				this.log().info("Dropped Hint packet as all hints are solved");
+				if (LOG_PROGRESS)
+					this.log().info("Dropped Hint packet as all hints are solved");
 				return;
 			}
 		} else {
 			if (this.unsolvedPasswordHashes == 0) {
-				this.log().info("Dropped Password packet as all hints are solved");
+				if (LOG_PROGRESS)
+					this.log().info("Dropped Password packet as all passwords are solved");
 				return;
 			}
 		}
