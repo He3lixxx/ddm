@@ -26,7 +26,8 @@ public class Master extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "master";
 
 	// Show information about how many hashes still need to be cracked.
-	private static final boolean LOG_PROGRESS = false;
+	// TODO: Set to false
+	private static final boolean LOG_PROGRESS = true;
 
 	// ---- Assumptions on the limitations of large messages
 	private static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
@@ -63,6 +64,11 @@ public class Master extends AbstractLoggingActor {
 	// Thus, the value you set here and the produced packet count this might differ significantly (factor alphabet size)
 	private static final long TARGET_WORK_PACKET_COUNT = 48;
 
+	// Should we try to find out if some passwords have a reduced alphabet that is a subset of other passwords?
+	// This required O(n^2) with n = count of distinct password alphabets, so for 100 or 1000 lines this should be fine
+	// For really huge files you can turn this off, it may happen that we do a lot of unnecessary hashing then, though.
+	private static final boolean CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS = true;
+
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
 	}
@@ -71,6 +77,10 @@ public class Master extends AbstractLoggingActor {
 		this.reader = reader;
 		this.collector = collector;
 		this.workers = new ArrayList<>();
+
+		// Workers may ask us before we started reading -> would give null pointer exceptions
+		this.actorsWaitingForUnsolvedReferenceMessages = new HashSet<>();
+		this.actorsWaitingForUnsolvedMessages = new HashMap<>();
 	}
 
 	////////////////////
@@ -161,20 +171,12 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 3327522514637238884L;
 	}
 
-	// Worker to master: I found a match for this hint hash.
+	// Worker to master: I found a match for this hash.
 	@Data @NoArgsConstructor @AllArgsConstructor
-	static class HintSolvedMessage implements Serializable {
+	static class HashSolvedMessage implements Serializable {
 		private static final long serialVersionUID = 3443862827428452603L;
 		private byte[] hash;
-		private String hint;
-	}
-
-	// Worker to master: I found a match for this password hash.
-	@Data @NoArgsConstructor @AllArgsConstructor
-	static class PasswordSolvedMessage implements Serializable {
-		private static final long serialVersionUID = 5219945881030570315L;
-		private byte[] hash;
-		private String password;
+		private String string;
 	}
 
 	// Worker to master: I'm done with my current task. Mark the task as done and give me a new one.
@@ -219,6 +221,9 @@ public class Master extends AbstractLoggingActor {
 	private static class CsvEntry {
 		private int id;
 		private int unsolved_hints_left;
+		// We need this so for a given (String, Hash) pair, we can decide whether this is a solution to a hint or to the
+		// password.
+		private ByteBuffer passwordHash;
 		private Set<Character> reducedPasswordAlphabet;
 
 		void storeHintSolution(String hint) {
@@ -231,7 +236,6 @@ public class Master extends AbstractLoggingActor {
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
     // Will be filled when all csv lines have been read and when all hints for a line have been solved
     private List<Object> openWorkPackets;
-	private Set<Set<Character>> passwordAlphabetsWorkPacketsWereCreatedFor;
 
 	// When a node goes down, we need to redistribute the work of the actors on this node
     // Should be either HintWorkPacketMessages or PasswordWorkPacketMessages
@@ -251,6 +255,7 @@ public class Master extends AbstractLoggingActor {
 	// required to find out whether we are done solving hints / solving passwords
 	private long unsolvedHintHashes;
 	private long unsolvedPasswordHashes;
+	private boolean passwordPacketsCreated;
 
 	private long totalHintCount;
 	private long totalPasswordCount;
@@ -359,8 +364,7 @@ public class Master extends AbstractLoggingActor {
 				.match(UnsolvedHashesReceivedMessage.class, this::handle)
 
 				.match(DistributeWorkPacketsMessage.class, this::handle)
-				.match(HintSolvedMessage.class, this::handle)
-				.match(PasswordSolvedMessage.class, this::handle)
+				.match(HashSolvedMessage.class, this::handle)
 				.match(DoneMessage.class, this::handle)
 
 				.match(Terminated.class, this::handle)
@@ -397,16 +401,16 @@ public class Master extends AbstractLoggingActor {
 			entry.id = Integer.parseInt(line[0]);
 			entry.unsolved_hints_left = line.length - 5;
             entry.reducedPasswordAlphabet = new HashSet<>(this.passwordChars);
+            entry.passwordHash = HexStringParser.parse(line[4]);
 
-			ByteBuffer passwordHash = HexStringParser.parse(line[4]);
 			ByteBuffer[] hintHashes = new ByteBuffer[line.length - 5];
 			for (int i = 5; i < line.length; ++i) {
 				hintHashes[i - 5] = HexStringParser.parse(line[i]);
 			}
 
-			this.addHashEntryPairToEntryLookupMap(passwordHash, entry);
+			this.addHashEntryPairToEntryLookupMap(entry.passwordHash, entry);
 
-			boolean passwordHashAdded = this.unsolvedHashes.add(passwordHash);
+			boolean passwordHashAdded = this.unsolvedHashes.add(entry.passwordHash);
 			this.unsolvedPasswordHashes += passwordHashAdded ? 1 : 0;
 
 			this.totalHintCount += entry.unsolved_hints_left;
@@ -468,9 +472,9 @@ public class Master extends AbstractLoggingActor {
 		this.idleWorkers = new HashSet<>();
 
 		// Data related to the iteration itself. Clear all so the reader has a fresh base to start from.
-		this.passwordAlphabetsWorkPacketsWereCreatedFor = new HashSet<>();
 		this.unsolvedHintHashes = 0;
 		this.unsolvedPasswordHashes = 0;
+		this.passwordPacketsCreated = false;
 		this.totalHintCount = 0;
 		this.totalPasswordCount = 0;
 		this.unsolvedHashes = new HashSet<>();
@@ -512,12 +516,8 @@ public class Master extends AbstractLoggingActor {
 			this.log().warning("Input data has such structure that we estimate it to be cheaper to ignore the hints.");
 			this.log().warning("-> ignoring hints.");
 
-			// No hints were solved -> all entries have the same reduced alphabet -> only need to create packets for
-			// first entry
-			Iterable<CsvEntry> firstCsvEntryList = this.hashToEntry.values().iterator().next();
-			CsvEntry firstCsvEntry = firstCsvEntryList.iterator().next();
-			this.createPasswordWorkPacketsFor(firstCsvEntry);
-
+			// No hints were solved -> all entries have the same unreduced reduced alphabet
+			this.createPasswordWorkPacketsForAlphabet(this.passwordChars);
 		} else {
 			for (char removedChar : this.passwordChars) {
 				Set<Character> reducedSet = new HashSet<>(this.passwordChars);
@@ -653,30 +653,110 @@ public class Master extends AbstractLoggingActor {
 		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
 	}
 
-	private void handle(HintSolvedMessage message) {
+	private void handle(HashSolvedMessage message) {
 		assert(!this.reading);
 
 		ByteBuffer wrappedHash = wrap(message.getHash());
-
-		this.unsolvedHintHashes -= 1;
 
 		List<CsvEntry> entryList = this.hashToEntry.get(wrappedHash);
 		assert(entryList != null);
 		assert(entryList.size() > 0);
 
-		boolean workPacketCreated = false;
 		for (CsvEntry entry : entryList) {
-			entry.storeHintSolution(message.getHint());
-			if(entry.unsolved_hints_left == 0
-					&& !this.passwordAlphabetsWorkPacketsWereCreatedFor.contains(entry.reducedPasswordAlphabet)) {
-				this.createPasswordWorkPacketsFor(entry);
-				workPacketCreated = true;
+			if (wrappedHash.equals(entry.passwordHash)) {
+				this.passwordSolved(entry, wrappedHash, message.getString());
+			} else {
+				this.hintSolved(entry, wrappedHash, message.getString());
 			}
 		}
 
-		if(workPacketCreated) {
-			this.self().tell(new DistributeWorkPacketsMessage(), this.self());
+		if (this.unsolvedHintHashes == 0 && !this.passwordPacketsCreated) {
+			this.createPasswordWorkPackets();
 		}
+
+		if (this.unsolvedPasswordHashes == 0) {
+			if (this.readerHasLines) {
+				this.startReading();
+			} else {
+				this.terminate();
+			}
+		}
+	}
+
+	private void createPasswordWorkPackets() {
+		Set<Set<Character>> uniqueAlphabets = new HashSet<>();
+		int maxAlphabetSize = 0;
+
+		for (Iterable<CsvEntry> entryList : this.hashToEntry.values()) {
+			for (CsvEntry entry : entryList) {
+				uniqueAlphabets.add(entry.reducedPasswordAlphabet);
+				maxAlphabetSize = Math.max(maxAlphabetSize, entry.reducedPasswordAlphabet.size());
+			}
+		}
+
+		if (CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS) {
+			System.out.println("Start");
+			boolean warn = uniqueAlphabets.size() > 10000;
+			if (warn) {
+				this.log().warning("The input file results in a lot of unique password alphabets. I will try to " +
+						"deduplicate work by making sure that no password alphabet is contained within another alphabet. " +
+						"However, this requires O(n^2) operations with n = " + uniqueAlphabets.size() + " for the current " +
+						"input file. If it does not happen very often in the input file that a password's reduced alphabet " +
+						"is a subset of another password's reduced alphabet, make sure to turn off " +
+						"CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS.");
+			}
+			long setsRemoved = 0;
+
+			ArrayList<LinkedList<Set<Character>>> alphabetsWithSize = new ArrayList<>(maxAlphabetSize + 1);
+			for (int size = 0; size < maxAlphabetSize + 1; ++size)
+				alphabetsWithSize.add(new LinkedList<>());
+
+			for (Set<Character> reducedAlphabet : uniqueAlphabets) {
+				alphabetsWithSize.get(reducedAlphabet.size()).add(reducedAlphabet);
+			}
+
+			// This looks intimidating, it is "only" n^2 on the count of unique sets though.
+			// We think it's better to spend some time here than to recheck the same character sets.
+			// However, if you are sure that no cases will occur where one password's reduced character set is contained
+			// in another passwords character set, you can set
+			for(int currentSize = maxAlphabetSize; currentSize > 0; --currentSize) {
+				for (int smallerSize = currentSize - 1; smallerSize > 0; --smallerSize) {
+					for(Set<Character> currentSet : alphabetsWithSize.get(currentSize)) {
+						Iterator<Set<Character>> smallerSetIterator = alphabetsWithSize.get(smallerSize).iterator();
+						while(smallerSetIterator.hasNext()) {
+							Set<Character> smallerSet = smallerSetIterator.next();
+							if (currentSet.containsAll(smallerSet)) {
+								smallerSetIterator.remove();
+								uniqueAlphabets.remove(smallerSet);
+								setsRemoved += 1;
+							}
+						}
+					}
+				}
+			}
+
+			System.out.println("End");
+
+			if (warn) {
+				this.log().warning("O(n^2) algorithm done. I removed " + setsRemoved + " alphabets.");
+			}
+		} else {
+			this.log().warning("You have turned off CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS. If a significant count of " +
+					"reduced password alphabets are subsets of other reduced password alphabets, you might experience" +
+					"degraded performance.");
+		}
+
+		for (Set<Character> uniqueAlphabet : uniqueAlphabets) {
+			this.createPasswordWorkPacketsForAlphabet(uniqueAlphabet);
+		}
+
+		this.passwordPacketsCreated = true;
+		this.self().tell(new DistributeWorkPacketsMessage(), this.self());
+	}
+
+	private void hintSolved(CsvEntry entry, ByteBuffer hash, String hint) {
+		this.unsolvedHintHashes -= 1;
+		entry.storeHintSolution(hint);
 
 		// We decided _not_ to start cracking the password before we have solved all hints, here's why:
 		// For a single line, let cracking another hint take time t1, cracking the PW directly take t2 and
@@ -691,10 +771,8 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	private void createPasswordWorkPacketsFor(CsvEntry entry) {
-		this.passwordAlphabetsWorkPacketsWereCreatedFor.add(entry.reducedPasswordAlphabet);
-
-		this.createPasswordWorkPacketsRecursively(entry.reducedPasswordAlphabet,
+	private void createPasswordWorkPacketsForAlphabet(Set<Character> alphabet) {
+		this.createPasswordWorkPacketsRecursively(alphabet,
 			1,
 			""
 		);
@@ -720,24 +798,10 @@ public class Master extends AbstractLoggingActor {
 		}
 	}
 
-	private void handle(PasswordSolvedMessage message) {
-		assert(!this.reading);
-
-		ByteBuffer wrappedHash = wrap(message.getHash());
+	private void passwordSolved(CsvEntry entry, ByteBuffer hash, String password) {
+		this.collector.tell(new Collector.CollectMessage(entry.id + ": " + password), this.self());
 
 		this.unsolvedPasswordHashes -= 1;
-
-		for (CsvEntry entry : this.hashToEntry.get(wrappedHash)) {
-			this.collector.tell(new Collector.CollectMessage(entry.id + ": " + message.getPassword()), this.self());
-		}
-
-		if (this.unsolvedPasswordHashes == 0) {
-			if (this.readerHasLines) {
-				this.startReading();
-			} else {
-				this.terminate();
-			}
-		}
 
 		if (LOG_PROGRESS) {
 			this.log().info("Password solved, " + this.unsolvedPasswordHashes + " to do.");

@@ -269,7 +269,7 @@ public class Worker extends AbstractLoggingActor {
 			byte[] hashBytes = hash(raw_hint);
 			ByteBuffer wrappedHash = wrap(hashBytes);
 			if (this.unsolvedHashes.contains(wrappedHash))
-				this.sender().tell(new Master.HintSolvedMessage(hashBytes, raw_hint), this.self());
+				this.sender().tell(new Master.HashSolvedMessage(hashBytes, raw_hint), this.self());
 		}
 
 		for (int i = 0; i < charsToPermute; i++) {
@@ -297,7 +297,7 @@ public class Worker extends AbstractLoggingActor {
 			byte[] hashBytes = hash(prefix);
 			ByteBuffer wrappedHash = wrap(hashBytes);
 			if (this.unsolvedHashes.contains(wrappedHash))
-				this.sender().tell(new Master.PasswordSolvedMessage(hashBytes, prefix), this.self());
+				this.sender().tell(new Master.HashSolvedMessage(hashBytes, prefix), this.self());
 
 			return;
 		}

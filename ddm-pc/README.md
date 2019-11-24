@@ -13,11 +13,11 @@ the whole range of possible hints and passwords once and find all solutions.
 
 However, for large input data sets, it might happen that not all hashes can
 be kept in memory on each node. In this case, we need to do multiple
-iterations. In each iteration, each node only gets a part of the hashes we
-are searching for. Thus, we need to cycle through the same hashes multiple
-times. This effectively multiplies the time required for the algorithm to
-finish by the count of required iterations. Thus, you want to make sure to
-prevent multiple iterations as effectively as possible.
+iterations. In each iteration, each node only gets this part of the hashes.
+Thus, we need to compute hashes for the same strings multiple times.
+This effectively multiplies the time required for the algorithm to
+finish by the count of required iterations. Thus, you want to make sure
+to prevent multiple iterations as effectively as possible.
 
 We think that this is the only solution to solve the case where the input
 is too big to be kept in memory as we're not allowed to use the disk,
@@ -46,8 +46,9 @@ minimal run times.
 Our algorithm generates a fixed set of work packets and distributes them
 to the next free worker. However, if we do not have any estimation beforehand
 on how many workers we can expect, we might either create way too many
-work packets, resulting in much communication overhead, or may too few
-work packets, resulting in workers being idle while they could perform work.
+work packets, resulting in much communication overhead, or way too few
+work packets, resulting in workers being idle while they could be used
+to speed up the process.
 
 Currently, the project is set up to work fine with up to about 110 workers,
 so for most testing environments, no changes should be required.
@@ -57,18 +58,26 @@ it if you could increase the `TARGET_WORK_PACKET_COUNT` in the `Master` actor
 to the number of workers you want to start (probably 12 * 20 = 240).
 
 #### General note
-We think that this implementation gives the best possible
-performance for any input data that could realistically be encountered,
-although you can artificially craft input files that will take longer to
-process than actually necessary (e.g. if the alphabet only allows N
-distinct passwords and the file has N distinct password hashes).
+We think that this implementation gives optimal performance for any
+input data that could realistically be encountered, although you can
+artificially craft input files that will take longer to process than
+actually necessary (e.g. if the alphabet only allows N distinct passwords
+and the file has N distinct password hashes).
+We did not write logic to detect such cases as we do not expect them to
+occur in any randomly generated data.
 
 We did not specifically try to optimize for the sample input file that was
-given (as we expect testing to be done with different input files)
+given (as we expect testing to be done with different input files). For
+example, if you assume that every hash in the file is distinct and that
+every hint removes a different character from the password alphabet,
+you can already drastically reduce the range of possible passwords.
+
+We did not make any such illegal assumptions about the input file that allow
+to speed up the computation but result in wrong solutions for input files
+where these assumptions do not hold.
 
 If you encounter any problems or bad performance,
 please contact us - we have tested some self created input files, but
 might have missed some edge cases.
-
-If you run this implementation on the RaspberryPi or the Thor cluster, please
-let us know how it performs.
+We'd also like to ask you to let us know how this implementation performs
+if you run it on the RaspberryPi or the Thor cluster.
