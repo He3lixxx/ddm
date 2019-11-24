@@ -26,8 +26,7 @@ public class Master extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "master";
 
 	// Show information about how many hashes still need to be cracked.
-	// TODO: Set to false
-	private static final boolean LOG_PROGRESS = true;
+	private static final boolean LOG_PROGRESS = false;
 
 	// ---- Assumptions on the limitations of large messages
 	private static final boolean VALIDATE_MEMORY_ESTIMATIONS = false;
@@ -734,10 +733,10 @@ public class Master extends AbstractLoggingActor {
 				}
 			}
 
-			this.log().warning("Done. I removed " + setsRemoved + " alphabets.");
+			this.log().info("Done. I removed " + setsRemoved + " alphabets.");
 		} else {
 			this.log().warning("You have turned off CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS. If a significant count of " +
-					"reduced password alphabets are subsets of other reduced password alphabets, you might experience" +
+					"reduced password alphabets are subsets of other reduced password alphabets, you might experience " +
 					"degraded performance.");
 		}
 
