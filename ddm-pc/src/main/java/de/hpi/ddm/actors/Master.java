@@ -695,9 +695,7 @@ public class Master extends AbstractLoggingActor {
 		}
 
 		if (CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS) {
-			System.out.println("Start");
-			boolean warn = uniqueAlphabets.size() > 10000;
-			if (warn) {
+			if (uniqueAlphabets.size() > 10000) {
 				this.log().warning("The input file results in a lot of unique password alphabets. I will try to " +
 						"deduplicate work by making sure that no password alphabet is contained within another alphabet. " +
 						"However, this requires O(n^2) operations with n = " + uniqueAlphabets.size() + " for the current " +
@@ -705,6 +703,7 @@ public class Master extends AbstractLoggingActor {
 						"is a subset of another password's reduced alphabet, make sure to turn off " +
 						"CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS.");
 			}
+			this.log().info("Starting password alphabet subset deduplication...");
 			long setsRemoved = 0;
 
 			ArrayList<LinkedList<Set<Character>>> alphabetsWithSize = new ArrayList<>(maxAlphabetSize + 1);
@@ -735,11 +734,7 @@ public class Master extends AbstractLoggingActor {
 				}
 			}
 
-			System.out.println("End");
-
-			if (warn) {
-				this.log().warning("O(n^2) algorithm done. I removed " + setsRemoved + " alphabets.");
-			}
+			this.log().warning("Done. I removed " + setsRemoved + " alphabets.");
 		} else {
 			this.log().warning("You have turned off CHECK_PASSWORD_ALPHABETS_FOR_SUBSETS. If a significant count of " +
 					"reduced password alphabets are subsets of other reduced password alphabets, you might experience" +
