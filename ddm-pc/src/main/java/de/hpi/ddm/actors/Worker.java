@@ -126,7 +126,6 @@ public class Worker extends AbstractLoggingActor {
 	private void handle(Master.HintWorkPacketMessage message){
 		assert(this.unsolvedHashesReceived);
 
-		// Might be a reference from the master, but it was crafted just for us, so this shouldn't be a problem.
 		Set<Character> reducedAlphabet = message.getReducedAlphabet();
 
 		Character[] characterList = new Character[reducedAlphabet.size()];

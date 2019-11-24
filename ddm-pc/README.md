@@ -58,7 +58,7 @@ it if you could increase the `TARGET_WORK_PACKET_COUNT` in the `Master` actor
 to the number of workers you want to start (probably 12 * 20 = 240).
 
 #### General note
-We think that this implementation gives optimal performance for any
+We think that this algorithm gives optimal performance for any
 input data that could realistically be encountered, although you can
 artificially craft input files that will take longer to process than
 actually necessary (e.g. if the alphabet only allows N distinct passwords
@@ -78,6 +78,8 @@ where these assumptions do not hold.
 
 If you encounter any problems or bad performance,
 please contact us - we have tested some self created input files, but
-might have missed some edge cases.
+might have missed some edge cases. If there are bugs that are fixable
+without changing the logical concept, we'd like to fix them.
+
 We'd also like to ask you to let us know how this implementation performs
 if you run it on the RaspberryPi or the Thor cluster.
