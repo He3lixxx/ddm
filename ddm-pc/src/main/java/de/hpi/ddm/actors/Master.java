@@ -275,7 +275,7 @@ public class Master extends AbstractLoggingActor {
 	private long iterationId = 0;
 
 	// Are we currently reading the csv file? If so, some internal structures might not be set up completely (unsolvedHashes, ...)
-	private boolean reading = false;
+	private boolean reading = true;
 	// Does the csvReader have more lines to tell us? If so, we need to get back to reading after solving the current iteration.
 	private boolean readerHasLines = true;
 
@@ -463,7 +463,8 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	private void startReading() {
-		assert(!this.reading);
+		// Before we start the first iteration, we have to set this.reading to true to wait when we start paused.
+		assert(!this.reading || this.iterationId == 0);
 		// reset all internal state so that we can start filling it up again when the reader sends batches
 
 		// We can only come here if the current iteration is completely solved.
